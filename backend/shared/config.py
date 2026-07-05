@@ -18,5 +18,8 @@ class Settings(BaseSettings):
     db_password: str = ""
     db_driver: str = "ODBC Driver 18 for SQL Server"
 
+    # CORS - Vite dev server default port
+    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
 
 settings = Settings()
