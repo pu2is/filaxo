@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+langgraph
+langchain-core
+sqlglot
+sqlalchemy
+pyodbc
+pydantic-settings
+pyyaml
+httpx
