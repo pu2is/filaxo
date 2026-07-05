@@ -14,8 +14,6 @@ _TODO: backend, AI/LLM, database, frontend — see project docs._
 
 ## Getting Started
 
-_TODO: prerequisites, environment setup, and run instructions for backend/frontend._
-
 ### Dev Environment (Docker: Ollama + SQL Server)
 
 Brings up a local SQL Server 2022 instance restored from the sample `FilaksOne.bak`, plus an Ollama instance with `qwen2.5-coder:7b` pulled — everything the backend needs to run against locally.
@@ -58,16 +56,61 @@ The app must never connect with `sa`. `docker/create-readonly-user.sql` (applied
 sqlcmd -S localhost,14330 -U filaks_readonly -P "Filaks!ReadOnly2026" -d FilaksOne -C -Q "SELECT COUNT(*) FROM cobra.CrmLead"
 ```
 
+### Backend
+
+```bash
+cd backend
+python -m venv .venv && .venv/Scripts/activate   # macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --reload
+
+# Verify
+curl http://127.0.0.1:8000/health   # {"status":"ok"}
+```
+
+Requires ODBC Driver 18 for SQL Server on the host (needed by `pyodbc`). Copy [`.env.example`](.env.example) to `.env` to override defaults (DB/LLM connection settings).
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev   # http://localhost:5173
+```
+
+### LLM Smoke Test (T-SQL generation quality/latency)
+
+Requires the Docker dev environment above to be running (Ollama on `localhost:11434`).
+
+```bash
+python scripts/smoke_test_llm.py
+```
+
+Sends a `cobra.CrmLead` schema card + 1 few-shot example + 5 German questions to Ollama, printing the generated T-SQL and wall-clock latency per question. First-run findings (dialect errors, markdown-fence output, cold-start latency) are recorded in `docs/mvp-request.md`'s 7B risk/mitigation table.
+
+### LangGraph Spike
+
+No external dependencies — pure Python.
+
+```bash
+cd backend
+python spikes/langgraph_hello.py
+```
+
+Toy 3-node `StateGraph` (`generate_sql` → `validate_sql` → `finish`) with a conditional edge and a retry cycle; prints the execution log and a mermaid diagram. De-risks LangGraph mechanics ahead of the real Phase 2 pipeline.
+
 ## Project Structure
 
 ```
-backend/              FastAPI app, LLM integration, DB queries
-frontend/             Vue 3 SPA
-docker/               Per-service Dockerfiles and container config
-scripts/              Dev/ops scripts (e.g. DB restore)
-docker-compose.yml    Local dev environment (Ollama + SQL Server)
-FilaksOne/            Local sample database backup (git-ignored)
-docs/                 Design docs and database domain documentation (git-ignored, WIP)
+backend/                 FastAPI app (main.py, shared/config.py); spikes/ (LangGraph POC)
+frontend/                Vue 3 + Vite + Tailwind + shadcn-vue SPA; src/features/{chat,result,dashboard,traceability}/
+docker/                  create-readonly-user.sql (read-only DB login, run by db-readonly-init)
+scripts/                 DB restore (restore-db.sh/.sql) + LLM smoke test (smoke_test_llm.py)
+docker-compose.yml       Local dev environment (SQL Server + Ollama)
+docker-compose.gpu.yml   Optional GPU overlay for Ollama (see Dev Environment above)
+.env.example             Backend config template (DB + LLM connection settings)
+FilaksOne/               Local sample database backup (git-ignored)
+docs/                    Design docs and database domain documentation (git-ignored, WIP)
 ```
 
 ## Documentation
