@@ -30,9 +30,10 @@ docker compose up -d
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
-This starts four services:
-- `sqlserver` — SQL Server 2022 on `localhost,14330` (`sa` / `Filaks!Pass2026`)
+This starts these services:
+- `sqlserver` — SQL Server 2022 on `localhost,14330` (`sa` / `Filaks!Pass2026`, admin — used for restore only)
 - `db-init` — runs once, restores `FilaksOne` from the mounted `.bak` if it doesn't already exist, then exits
+- `db-readonly-init` — runs once after `db-init`, creates the `filaks_readonly` login/user (see below), then exits
 - `ollama` — Ollama API on `localhost:11434`
 - `ollama-init` — runs once, pulls `qwen2.5-coder:7b`, then exits
 
@@ -42,11 +43,20 @@ This starts four services:
 # Model is present
 docker compose exec ollama ollama list
 
-# Database is restored and queryable from the host
+# Database is restored and queryable from the host (admin login)
 sqlcmd -S localhost,14330 -U sa -P "Filaks!Pass2026" -C -Q "SELECT COUNT(*) FROM sys.tables"
 ```
 
-Re-running `docker compose up` is safe — `db-init` checks whether `FilaksOne` already exists before restoring, and `ollama pull` is a no-op if the model is already present.
+Re-running `docker compose up` is safe — `db-init` checks whether `FilaksOne` already exists before restoring, `db-readonly-init` checks whether the login/user already exist, and `ollama pull` is a no-op if the model is already present.
+
+### Application Database Login (Read-Only)
+
+The app must never connect with `sa`. `docker/create-readonly-user.sql` (applied automatically by `db-readonly-init`) creates a `filaks_readonly` login scoped to `db_datareader` on `FilaksOne` only — `SELECT` works, `INSERT`/`UPDATE`/`DELETE`/`DDL` are rejected by SQL Server itself regardless of what the app or an LLM-generated query attempts. See [`.env.example`](.env.example) for the connection string the backend should use.
+
+```bash
+# Read-only connectivity check from the host
+sqlcmd -S localhost,14330 -U filaks_readonly -P "Filaks!ReadOnly2026" -d FilaksOne -C -Q "SELECT COUNT(*) FROM cobra.CrmLead"
+```
 
 ## Project Structure
 
