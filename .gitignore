@@ -1,0 +1,48 @@
+# Challenge source files
+FilaksOne.zip
+FILAXO~1 1.PDF
+/FilaksOne
+
+# claude
+CLAUDE.md
+/docs
+/docs/*
+
+# dev tools (local only)
+/dev
+/dev/*
+/scripts
+/scripts/*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.env
+*.egg-info/
+dist/
+build/
+
+# Node / Frontend
+node_modules/
+dist/
+.nuxt/
+.output/
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
