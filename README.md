@@ -10,7 +10,13 @@ _TODO: short product description and demo screenshot/GIF._
 
 ## Tech Stack
 
-_TODO: backend, AI/LLM, database, frontend — see project docs._
+| Layer      | Choice                                                        |
+|------------|----------------------------------------------------------------|
+| Backend    | Python 3.12 + FastAPI + SQLAlchemy (pyodbc)                    |
+| AI/LLM     | Ollama (local) + `qwen2.5-coder:7b`, structured JSON output    |
+| SQL safety | sqlglot (T-SQL parse/validate/repair) + read-only DB login     |
+| Database   | SQL Server 2022 (ODBC Driver 18)                               |
+| Frontend   | Vue 3 + Vite + Tailwind CSS + shadcn-vue                       |
 
 ## Getting Started
 
@@ -70,6 +76,22 @@ curl http://127.0.0.1:8000/health   # {"status":"ok"}
 
 Requires ODBC Driver 18 for SQL Server on the host (needed by `pyodbc`). Copy [`.env.example`](.env.example) to `.env` to override defaults (DB/LLM connection settings).
 
+### AI Core Eval (`run_query`)
+
+Requires the Docker dev environment above to be running (SQL Server + Ollama). No frontend needed — this is the pure-backend proof that the NL-to-SQL core works end to end.
+
+```bash
+cd backend
+python scripts/eval_query.py
+```
+
+Runs every DB-verified question in `modules/schema/question_bank.yaml`, plus 2 planted out-of-scope probes, through `run_query()` — the single entry point chaining schema cards → LLM SQL generation (with a deterministic `TOP N` template for ranking questions) → sqlglot validation → DB execution, with error-feedback retry. Prints per-question SQL, row sample, pass/fail, and latency, then a summary (pass rate, avg/min/max latency).
+
+```bash
+# One-off manual check
+python -c "from modules.query.engine import run_query; print(run_query('Wie viele Leads gibt es?', ['cobra.CrmLead']))"
+```
+
 ### Frontend
 
 ```bash
@@ -102,7 +124,21 @@ Toy 3-node `StateGraph` (`generate_sql` → `validate_sql` → `finish`) with a 
 ## Project Structure
 
 ```
-backend/                 FastAPI app (main.py, shared/config.py); spikes/ (LangGraph POC)
+backend/
+├── main.py                    FastAPI app entrypoint
+├── modules/
+│   ├── query/
+│   │   ├── executor.py        Read-only DB execution gateway
+│   │   ├── validator.py       sqlglot T-SQL parse/validate/repair (blocks DML/DDL, injects TOP)
+│   │   ├── engine.py          run_query() — the AI core's single entry point
+│   │   └── ranking.py         Deterministic TOP-N template for ranking questions
+│   └── schema/
+│       ├── schema_cards.py    Compressed DDL + column whitelist per table
+│       ├── question_bank.py   Loader for question_bank.yaml (few-shots + eval set)
+│       └── question_bank.yaml DB-verified question -> SQL base set
+├── shared/                    db.py, llm.py (LLMProvider/OllamaProvider), prompts.py, config.py, exceptions.py
+├── scripts/eval_query.py      AI core eval harness (see AI Core Eval above)
+└── spikes/                    LangGraph POC
 frontend/                Vue 3 + Vite + Tailwind + shadcn-vue SPA; src/features/{chat,result,dashboard,traceability}/
 docker/                  create-readonly-user.sql (read-only DB login, run by db-readonly-init)
 scripts/                 DB restore (restore-db.sh/.sql) + LLM smoke test (smoke_test_llm.py)
