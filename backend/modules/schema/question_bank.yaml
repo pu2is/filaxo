@@ -1,0 +1,81 @@
+# DB-verified question -> T-SQL pairs for LEAD + CUSTOMER (docs/01-*).
+# Used as few-shot examples (get_few_shots) and as the eval base set.
+# Every reference_sql below was run against FilaksOne (localhost,14330) on 2026-07-06
+# and confirmed to return a non-zero / sensible result.
+#
+# Data-reality notes from that verification pass (see backend/modules/schema/question_bank.py
+# docstring for the full explanation):
+#   - CrmLead.Status / Priority / Source / LeadType are masked opaque codes, not readable
+#     strings -> never referenced here.
+#   - BaAddInfo.InfoTypeId is 100% NULL -> never referenced here.
+#   - CrmLead.KundenId does not resolve against any BaAddress.AddressId in this sample
+#     (checked directly, zero-padded, and cast-to-int) -> no entry relies on that JOIN
+#     actually matching rows. The cross-domain entry below combines independent counts
+#     from both tables in one statement instead of joining them.
+
+- id: lead_total_count
+  domain: [LEAD]
+  question: "Wie viele aktive Leads haben wir insgesamt?"
+  reference_sql: |
+    SELECT COUNT(*) AS ActiveLeadCount
+    FROM cobra.CrmLead
+    WHERE IsDeleted = 0
+  expect_nonzero: true
+
+- id: lead_highest_score
+  domain: [LEAD]
+  question: "Welcher Lead hat den höchsten Score?"
+  reference_sql: |
+    SELECT TOP 5 Id, FirstName, LastName, Score, Brand
+    FROM cobra.CrmLead
+    WHERE IsDeleted = 0 AND Score IS NOT NULL
+    ORDER BY Score DESC
+  expect_nonzero: true
+
+- id: lead_by_brand
+  domain: [LEAD]
+  question: "Für welche Marken interessieren sich unsere aktiven Leads?"
+  reference_sql: |
+    SELECT Brand, COUNT(*) AS LeadCount
+    FROM cobra.CrmLead
+    WHERE IsDeleted = 0 AND Brand IS NOT NULL AND Brand != ''
+    GROUP BY Brand
+    ORDER BY LeadCount DESC
+  expect_nonzero: true
+
+- id: customer_total_count
+  domain: [CUSTOMER]
+  question: "Wie viele Kunden sind insgesamt im System erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS CustomerCount
+    FROM cobra.BaAddress
+  expect_nonzero: true
+
+- id: customer_new_may2026
+  domain: [CUSTOMER]
+  question: "Wie viele neue Kunden sind im Mai 2026 hinzugekommen?"
+  reference_sql: |
+    SELECT COUNT(*) AS NewCustomers
+    FROM cobra.BaAddress
+    WHERE CreateDate >= '2026-05-01' AND CreateDate < '2026-06-01'
+  expect_nonzero: true
+
+- id: customer_top_city
+  domain: [CUSTOMER]
+  question: "In welcher Stadt haben wir die meisten Kunden?"
+  reference_sql: |
+    SELECT TOP 1 City, COUNT(*) AS CustomerCount
+    FROM cobra.BaAddress
+    WHERE City IS NOT NULL AND City != ''
+    GROUP BY City
+    ORDER BY CustomerCount DESC
+  expect_nonzero: true
+
+- id: lead_customer_overview
+  domain: [LEAD, CUSTOMER]
+  question: "Wie viele aktive Leads und wie viele Kunden haben wir insgesamt im System?"
+  reference_sql: |
+    SELECT
+        (SELECT COUNT(*) FROM cobra.CrmLead WHERE IsDeleted = 0) AS ActiveLeads,
+        (SELECT COUNT(*) FROM cobra.BaAddress)                   AS TotalCustomers
+  expect_nonzero: true
