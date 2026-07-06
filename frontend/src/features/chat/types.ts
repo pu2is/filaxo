@@ -3,8 +3,9 @@
 // layer to keep in sync on top of the contract itself.
 
 export interface ChoiceItem {
-  id: string
-  label: string
+  id: string // sent back as ChatRequest.payload when the choice is clicked
+  label: string // button text shown to the user (German)
+  action: ChatAction // sent back as ChatRequest.action when the choice is clicked (#22)
 }
 
 export interface SuggestionItem {
@@ -12,7 +13,13 @@ export interface SuggestionItem {
   label: string
 }
 
-export type ChatAction = 'start' | 'select_domain' | 'confirm_domain' | 'select_time' | 'query'
+export type ChatAction =
+  | 'start'
+  | 'select_domain'
+  | 'confirm_domain'
+  | 'select_time'
+  | 'proceed'
+  | 'query'
 
 export interface ChatRequest {
   session_id?: string | null

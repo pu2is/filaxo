@@ -17,8 +17,8 @@ onMounted(() => {
 })
 
 function handleChoice(choice: ChoiceItem) {
-  // Still hardcoded to select_domain -- choice-to-action routing is Big Goal 3 scope (#21).
-  chat.sendAction('select_domain', choice.id, choice.label)
+  // Server-driven routing: each choice carries the action the backend expects back (#22).
+  chat.sendAction(choice.action, choice.id, choice.label)
 }
 
 function handleSubmit(text: string) {
