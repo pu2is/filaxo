@@ -87,6 +87,42 @@ BaAddInfo(
 )""",
 }
 
+# Structured mirror of the column lists inside _CARDS above (deliberately excludes
+# masked columns like Status/Priority/Source/LeadType, same reasoning as the cards
+# themselves) -- used by modules/query/ranking.py to whitelist an LLM-provided
+# sort_column before it's interpolated into a SQL template. Keep in sync with _CARDS
+# if a card's column list ever changes.
+_COLUMNS: dict[str, list[str]] = {
+    "cobra.CrmLead": [
+        "Id", "FirstName", "LastName", "Email", "PhoneNumber", "Score", "Brand", "Model",
+        "AssignedToEmployee", "FirstResponseTime", "LastActivityDate", "CreatedAt",
+        "KundenId", "FzgStammId", "IsDeleted",
+    ],
+    "cobra.CrmLeadActivity": ["Id", "LeadId", "Type", "Date", "Result", "CreatedAt"],
+    "cobra.CrmLeadScores": ["Id", "LeadId", "TotalScore", "ScoredAt", "IsActive"],
+    "cobra.BaAddress": [
+        "AddressId", "Street", "StreetNo", "PostCode", "City", "Country", "Region", "CreateDate",
+    ],
+    "cobra.BaAddInfo": ["InfoNr", "InfoId", "InfoTypeId", "InfoValue"],
+}
+
+# Same soft-delete rule as each card's "MANDATORY FILTER" comment, structured for
+# the deterministic ranking template to apply automatically.
+_MANDATORY_FILTERS: dict[str, str] = {
+    "cobra.CrmLead": "IsDeleted = 0",
+}
+
+
+def get_columns(table: str) -> list[str]:
+    """Return the curated, safe-to-reference column whitelist for `table` (empty if unknown)."""
+    return list(_COLUMNS.get(table, []))
+
+
+def get_mandatory_filter(table: str) -> str | None:
+    """Return the mandatory WHERE condition for `table`, if it has one (e.g. a soft-delete flag)."""
+    return _MANDATORY_FILTERS.get(table)
+
+
 _JOIN_SNIPPETS: dict[frozenset[str], str] = {
     frozenset({"cobra.CrmLead", "cobra.BaAddress"}): """\
 -- JOIN LEAD x CUSTOMER (cross-domain, deterministic JOIN -- do not infer another path):

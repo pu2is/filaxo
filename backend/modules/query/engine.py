@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from modules.query.executor import execute
+from modules.query.ranking import is_ranking_question, try_ranking_query
 from modules.query.validator import validate
 from modules.schema.schema_cards import get_schema_context
 from shared.exceptions import DatabaseError
@@ -35,6 +36,16 @@ def run_query(
     if provider is None:
         provider = OllamaProvider()
     schema_context = get_schema_context(tables)
+
+    # Ranking questions ("top N", "welcher hat den hoechsten...") are the 7B's worst
+    # LIMIT-dialect failure mode (#15), so route them through the deterministic
+    # TOP-N template instead of free-form generate_sql. Only for a single, unambiguous
+    # subject table -- ranking across a JOIN isn't in scope. A hallucinated/invalid
+    # sort_column falls through to the normal path below rather than failing outright.
+    if len(tables) == 1 and is_ranking_question(question):
+        attempt = asyncio.run(try_ranking_query(question, tables[0], schema_context, provider))
+        if attempt.ok:
+            return QueryOutcome(status="SUCCESS", sql=attempt.sql, rows=attempt.rows)
 
     # No domain<->table reverse mapping exists yet (out of scope here, see #10/#11), so
     # few-shots can't be looked up from `tables` alone -- generate_sql runs without them.

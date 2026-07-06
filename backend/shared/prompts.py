@@ -30,3 +30,18 @@ def build_generate_sql_prompt(
     parts += ["", "# Question", question]
 
     return "\n".join(parts)
+
+
+_RANKING_INSTRUCTIONS = """You extract ranking parameters from a question about the schema below.
+You do NOT write SQL here -- only identify what to sort by.
+
+Respond with JSON only:
+- "sort_column": the exact column name, spelled exactly as it appears in the schema below.
+  Never invent a column that isn't listed there.
+- "direction": "DESC" for highest/most/best/top-ranked, "ASC" for lowest/least/fewest.
+- "n": how many rows the question asks for. If it says "welcher"/"welche" (which one) with
+  no count, that means exactly 1. Otherwise use the stated number (e.g. "Top 5" -> 5)."""
+
+
+def build_ranking_params_prompt(question: str, schema_context: str) -> str:
+    return "\n".join([_RANKING_INSTRUCTIONS, "", "# Schema", schema_context, "", "# Question", question])
