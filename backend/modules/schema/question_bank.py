@@ -27,6 +27,15 @@ with _BANK_PATH.open("r", encoding="utf-8") as _f:
     _ENTRIES: list[dict] = yaml.safe_load(_f) or []
 
 
+def get_all_entries() -> list[dict]:
+    """Return the raw curated entries (id, domain, question, reference_sql, expect_nonzero).
+
+    Structured access for callers that need per-entry metadata (e.g. the eval
+    harness), as opposed to get_few_shots's prompt-ready formatted strings.
+    """
+    return list(_ENTRIES)
+
+
 def get_few_shots(domains: list[str]) -> list[str]:
     """Return formatted question->SQL few-shot blocks for the given domain scope.
 
