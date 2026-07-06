@@ -28,3 +28,19 @@ export interface ChatResponse {
   show_input: boolean
   result: Record<string, unknown> | null
 }
+
+// --- Frontend-only view types below: NOT part of the backend contract. ---
+
+export interface UserReplyEntry {
+  kind: 'user'
+  id: string
+  text: string
+}
+
+export interface BotTurnEntry {
+  kind: 'bot'
+  id: string
+  response: ChatResponse
+}
+
+export type HistoryEntry = UserReplyEntry | BotTurnEntry
