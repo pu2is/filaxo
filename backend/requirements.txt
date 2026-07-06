@@ -8,3 +8,4 @@ pyodbc
 pydantic-settings
 pyyaml
 httpx
+pytest

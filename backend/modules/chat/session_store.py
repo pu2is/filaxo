@@ -11,8 +11,12 @@ from uuid import uuid4
 @dataclass
 class SessionState:
     session_id: str
+    # Funnel position: "greeting" | "scope" | "time" | "ready" (state machine in service.py, #22).
     step: str = "greeting"
+    # Domain keys accumulated by button clicks (subset of service.DOMAIN_LABELS).
     selected_domains: list[str] = field(default_factory=list)
+    # Time-range key (one of service.TIME_RANGE_LABELS), set at the "time" step; None before.
+    time_range: str | None = None
 
 
 sessions: dict[str, SessionState] = {}
