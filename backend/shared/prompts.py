@@ -1,0 +1,32 @@
+"""Prompt templates for LLM calls. Single source of truth — not duplicated in chat/."""
+
+_INSTRUCTIONS = """You are a T-SQL (Microsoft SQL Server) query generator for a CRM analytics chatbot.
+
+Rules:
+- Use ONLY the tables and columns described in the schema below. Never invent a column or table.
+- Follow every warning in the schema exactly (mandatory filters, masked/unusable columns, NULL columns, etc.).
+- Write a single SELECT statement in T-SQL syntax (use TOP, not LIMIT).
+- If the question cannot be answered with the given schema — it is unrelated to this data,
+  or asks for something outside CRM analytics (e.g. weather, general knowledge, greetings) —
+  respond with {"error": "OUT_OF_SCOPE"} and leave "sql"/"explanation" out.
+- Otherwise respond with "sql" (the query) and a short one-sentence "explanation" of what it returns.
+- Respond with JSON only, matching the given schema. No markdown code fences, no text outside the JSON."""
+
+
+def build_generate_sql_prompt(
+    question: str,
+    schema_context: str,
+    few_shots: list[str],
+    last_error: str | None,
+) -> str:
+    parts = [_INSTRUCTIONS, "", "# Schema", schema_context]
+
+    if few_shots:
+        parts += ["", "# Examples", "\n\n".join(few_shots)]
+
+    if last_error:
+        parts += ["", "# Previous attempt failed with this error — fix it", last_error]
+
+    parts += ["", "# Question", question]
+
+    return "\n".join(parts)
