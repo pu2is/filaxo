@@ -11,8 +11,6 @@ CLAUDE.md
 # dev tools (local only)
 /dev
 /dev/*
-/scripts
-/scripts/*
 
 # Python
 __pycache__/
