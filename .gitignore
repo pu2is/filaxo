@@ -7,6 +7,8 @@ FILAXO~1 1.PDF
 CLAUDE.md
 /docs
 /docs/*
+/.claude
+/.claude/*
 
 # dev tools (local only)
 /dev
