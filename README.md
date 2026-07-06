@@ -16,7 +16,7 @@ _TODO: short product description and demo screenshot/GIF._
 | AI/LLM     | Ollama (local) + `qwen2.5-coder:7b`, structured JSON output    |
 | SQL safety | sqlglot (T-SQL parse/validate/repair) + read-only DB login     |
 | Database   | SQL Server 2022 (ODBC Driver 18)                               |
-| Frontend   | Vue 3 + Vite + Tailwind CSS + shadcn-vue                       |
+| Frontend   | Vue 3 + Vite + Tailwind CSS + shadcn-vue + Pinia               |
 
 ## Getting Started
 
@@ -72,6 +72,11 @@ uvicorn main:app --reload
 
 # Verify
 curl http://127.0.0.1:8000/health   # {"status":"ok"}
+
+# Chat endpoint (guided funnel, Phase 1) -- session_id: null starts a fresh session
+curl -X POST http://127.0.0.1:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": null, "action": "start"}'
 ```
 
 Requires ODBC Driver 18 for SQL Server on the host (needed by `pyodbc`). Copy [`.env.example`](.env.example) to `.env` to override defaults (DB/LLM connection settings).
@@ -93,6 +98,8 @@ python -c "from modules.query.engine import run_query; print(run_query('Wie viel
 ```
 
 ### Frontend
+
+Chat UI (guided funnel walking skeleton): conversation history, choice buttons pinned above the input, and session restart, backed by a Pinia store. Expects the backend on `http://localhost:8000` (override via `.env`, see [`frontend/.env.example`](frontend/.env.example)); the backend's CORS allowlist covers the default Vite port 5173 only.
 
 ```bash
 cd frontend
@@ -127,6 +134,11 @@ Toy 3-node `StateGraph` (`generate_sql` → `validate_sql` → `finish`) with a 
 backend/
 ├── main.py                    FastAPI app entrypoint
 ├── modules/
+│   ├── chat/
+│   │   ├── router.py          POST /api/chat (single endpoint for every action)
+│   │   ├── service.py         Phase 1 canned conversation steps (greeting -> scope confirmation)
+│   │   ├── session_store.py   In-memory {session_id: SessionState}
+│   │   └── schemas.py         ChatRequest / ChatResponse wire format (frozen contract)
 │   ├── query/
 │   │   ├── executor.py        Read-only DB execution gateway
 │   │   ├── validator.py       sqlglot T-SQL parse/validate/repair (blocks DML/DDL, injects TOP)
@@ -139,7 +151,10 @@ backend/
 ├── shared/                    db.py, llm.py (LLMProvider/OllamaProvider), prompts.py, config.py, exceptions.py
 ├── scripts/eval_query.py      AI core eval harness (see AI Core Eval above)
 └── spikes/                    LangGraph POC
-frontend/                Vue 3 + Vite + Tailwind + shadcn-vue SPA; src/features/{chat,result,dashboard,traceability}/
+frontend/                Vue 3 + Vite + Tailwind + shadcn-vue SPA
+├── src/features/chat/         Chat UI: components + Pinia store (stores/chat.store.ts) + contract types
+├── src/features/{result,dashboard,traceability}/   Later goals (placeholders)
+└── src/shared/api/            Typed fetch client for the /api/chat contract
 docker/                  create-readonly-user.sql (read-only DB login, run by db-readonly-init)
 scripts/                 DB restore (restore-db.sh/.sql) + LLM smoke test (smoke_test_llm.py)
 docker-compose.yml       Local dev environment (SQL Server + Ollama)
