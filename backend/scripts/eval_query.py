@@ -23,14 +23,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from modules.query.engine import run_query  # noqa: E402
+from modules.schema.domain_tables import DOMAIN_TABLES  # noqa: E402
 from modules.schema.question_bank import get_all_entries  # noqa: E402
-
-# Domain -> tables, scoped to what this eval needs to call run_query(question, tables).
-# A full cross-domain join registry is later/separate scope (see modules/schema/schema_cards.py).
-DOMAIN_TABLES: dict[str, list[str]] = {
-    "LEAD": ["cobra.CrmLead", "cobra.CrmLeadActivity", "cobra.CrmLeadScores"],
-    "CUSTOMER": ["cobra.BaAddress", "cobra.BaAddInfo"],
-}
 
 # Planted probes (Task: "1-2 planted out-of-scope probes") -- clearly unrelated
 # to CRM data, must come back OUT_OF_SCOPE rather than a hallucinated answer.

@@ -1,8 +1,9 @@
-"""Unit tests for the Phase 1 funnel state machine (#22).
+"""Unit tests for the Phase 1 funnel state machine (#22, simplified in #25).
 
-Calls service.handle_chat directly (no HTTP): happy paths in both domain orders,
-the skip-add-on path, and the guard cases (wrong action for the step, unknown
-payload, unknown session) -- per the ticket's acceptance criteria.
+Calls service.handle_chat directly (no HTTP): the happy path and the guard cases
+(wrong action for the step, unknown payload, unknown session) -- per the ticket's
+acceptance criteria. The #25 query -> engine outcome mapping lives in
+test_chat_query.py; this file only covers funnel navigation (greeting -> time -> ready).
 """
 
 import pytest
@@ -28,11 +29,10 @@ def start_session() -> ChatResponse:
     return send(None, "start")
 
 
-def walk_to_time(first_domain: str = "LEAD") -> str:
+def walk_to_time(domain: str = "LEAD") -> str:
     """Drive a fresh session up to the time step; returns its session_id."""
     sid = start_session().session_id
-    send(sid, "select_domain", first_domain)
-    send(sid, "proceed")
+    send(sid, "select_domain", domain)
     return sid
 
 
@@ -42,29 +42,19 @@ def walk_to_ready(time_key: str = "THIS_MONTH") -> str:
     return sid
 
 
-# --- happy paths ------------------------------------------------------------------------
+# --- happy path ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "first, second", [("LEAD", "CUSTOMER"), ("CUSTOMER", "LEAD")]
-)
-def test_full_funnel_with_addon(first: str, second: str):
+def test_full_funnel_single_thema():
     greeting = start_session()
     sid = greeting.session_id
     assert "Was möchten Sie heute analysieren?" in greeting.bot_message
     assert [c.id for c in greeting.choices] == ["LEAD", "CUSTOMER"]
 
-    scope = send(sid, "select_domain", first)
-    assert sessions[sid].step == "scope"
-    assert "einbeziehen oder direkt fortfahren" in scope.bot_message
-    # Add-on offers exactly the not-yet-selected domain, plus the generic "Weiter".
-    assert [(c.id, c.action) for c in scope.choices] == [
-        (second, "select_domain"),
-        ("proceed", "proceed"),
-    ]
-
-    time_prompt = send(sid, "select_domain", second)
+    # D5: picking a thema goes straight to the time step -- no add-on offer in between.
+    time_prompt = send(sid, "select_domain", "LEAD")
     assert sessions[sid].step == "time"
+    assert sessions[sid].domain == "LEAD"
     assert "Für welchen Zeitraum" in time_prompt.bot_message
     assert [c.id for c in time_prompt.choices] == [
         "TODAY", "THIS_WEEK", "THIS_MONTH", "THIS_YEAR", "ALL",
@@ -78,20 +68,8 @@ def test_full_funnel_with_addon(first: str, second: str):
 
     state = sessions[sid]
     assert state.step == "ready"
-    assert state.selected_domains == [first, second]
+    assert state.domain == "LEAD"
     assert state.time_range == "THIS_MONTH"
-
-
-def test_skip_addon_via_proceed():
-    sid = start_session().session_id
-    send(sid, "select_domain", "CUSTOMER")
-    time_prompt = send(sid, "proceed")
-    assert "Für welchen Zeitraum" in time_prompt.bot_message
-
-    ready = send(sid, "select_time", "ALL")
-    assert "Stellen Sie jetzt Ihre Frage" in ready.bot_message
-    assert sessions[sid].selected_domains == ["CUSTOMER"]
-    assert sessions[sid].time_range == "ALL"
 
 
 def test_every_choice_carries_an_action():
@@ -99,14 +77,13 @@ def test_every_choice_carries_an_action():
     responses = [
         send(sid, "start"),
         send(sid, "select_domain", "LEAD"),
-        send(sid, "select_domain", "CUSTOMER"),
     ]
     for response in responses:
         for choice in response.choices:
-            assert choice.action in ("select_domain", "select_time", "proceed")
+            assert choice.action in ("select_domain", "select_time")
 
 
-# --- guard rails ------------------------------------------------------------------------
+# --- guard rails ---------------------------------------------------------------------------
 
 
 def test_wrong_action_for_step_reprompts_greeting():
@@ -121,7 +98,7 @@ def test_unknown_domain_payload_reprompts_greeting():
     sid = start_session().session_id
     response = send(sid, "select_domain", "FOO")
     assert "Was möchten Sie heute analysieren?" in response.bot_message
-    assert sessions[sid].selected_domains == []
+    assert sessions[sid].domain is None
 
 
 def test_unknown_time_payload_reprompts_time_step():
@@ -132,19 +109,14 @@ def test_unknown_time_payload_reprompts_time_step():
     assert sessions[sid].time_range is None
 
 
-def test_proceed_at_greeting_reprompts():
-    sid = start_session().session_id
-    response = send(sid, "proceed")
-    assert "Was möchten Sie heute analysieren?" in response.bot_message
-    assert sessions[sid].step == "greeting"
-
-
-def test_duplicate_domain_at_scope_advances_without_duplicating():
-    sid = start_session().session_id
-    send(sid, "select_domain", "LEAD")
-    send(sid, "select_domain", "LEAD")  # hand-crafted duplicate, not offered by the UI
+def test_select_domain_again_at_time_step_reprompts_time():
+    # A second domain pick has no add-on step to land on anymore (D5) -- it's simply
+    # not a valid action at "time", so it re-prompts the time step unchanged.
+    sid = walk_to_time("LEAD")
+    response = send(sid, "select_domain", "CUSTOMER")
+    assert "Für welchen Zeitraum" in response.bot_message
     assert sessions[sid].step == "time"
-    assert sessions[sid].selected_domains == ["LEAD"]
+    assert sessions[sid].domain == "LEAD"
 
 
 def test_unknown_session_id_restarts_funnel():
@@ -161,13 +133,12 @@ def test_restart_mid_funnel_drops_accumulated_scope():
     assert "Was möchten Sie heute analysieren?" in response.bot_message
     state = sessions[sid]
     assert state.step == "greeting"
-    assert state.selected_domains == []
+    assert state.domain is None
     assert state.time_range is None
 
 
-def test_query_at_ready_keeps_placeholder():
+def test_query_without_payload_at_ready_reprompts():
     sid = walk_to_ready()
-    response = send(sid, "query", "Wie viele Leads gibt es?")
-    assert "noch nicht verfügbar" in response.bot_message
-    # Session survives untouched -- Big Goal 4 will replace this branch.
+    response = send(sid, "query", None)
+    assert "Stellen Sie jetzt Ihre Frage" in response.bot_message
     assert sessions[sid].step == "ready"

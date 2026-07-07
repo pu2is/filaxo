@@ -41,6 +41,7 @@ class RankingAttempt:
     ok: bool
     sql: str | None = None
     rows: list[dict] | None = None
+    columns: list[dict] | None = None
     error: str | None = None
 
 
@@ -77,6 +78,6 @@ async def try_ranking_query(
             return RankingAttempt(ok=False, error=validated.error)
 
         result = execute(validated.sql)
-        return RankingAttempt(ok=True, sql=validated.sql, rows=result.rows)
+        return RankingAttempt(ok=True, sql=validated.sql, rows=result.rows, columns=result.columns)
     except Exception as e:
         return RankingAttempt(ok=False, error=str(e))

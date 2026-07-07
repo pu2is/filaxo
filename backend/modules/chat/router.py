@@ -11,5 +11,9 @@ router = APIRouter()
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
+def chat(request: ChatRequest) -> ChatResponse:
+    # Sync def, not async: handle_chat -> run_query calls asyncio.run() internally
+    # (#13), which raises if invoked from inside an already-running event loop. A sync
+    # endpoint runs on FastAPI's threadpool instead, where asyncio.run() can start its
+    # own loop; it also means the 5-30s LLM call doesn't block the server's event loop.
     return handle_chat(request)

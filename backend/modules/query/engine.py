@@ -27,6 +27,7 @@ class QueryOutcome:
     # SUCCESS with rows == [] is a legitimate, distinct outcome from GAVE_UP -- a
     # query that ran fine and found nothing must never be reported as a failure (#24).
     rows: list[dict] | None = None
+    columns: list[dict] | None = None
     error: str | None = None
     tables_used: list[str] = field(default_factory=list)
 
@@ -52,7 +53,9 @@ def run_query(
     if len(tables) == 1 and is_ranking_question(question):
         attempt = asyncio.run(try_ranking_query(question, tables[0], schema_context, provider))
         if attempt.ok:
-            return QueryOutcome(status="SUCCESS", sql=attempt.sql, rows=attempt.rows, tables_used=tables)
+            return QueryOutcome(
+                status="SUCCESS", sql=attempt.sql, rows=attempt.rows, columns=attempt.columns, tables_used=tables
+            )
 
     # No domain<->table reverse mapping exists yet (out of scope here, see #10/#11), so
     # few-shots can't be looked up from `tables` alone -- generate_sql runs without them.
@@ -84,6 +87,8 @@ def run_query(
             last_error = str(e)
             continue
 
-        return QueryOutcome(status="SUCCESS", sql=validated.sql, rows=result.rows, tables_used=tables)
+        return QueryOutcome(
+            status="SUCCESS", sql=validated.sql, rows=result.rows, columns=result.columns, tables_used=tables
+        )
 
     return QueryOutcome(status="GAVE_UP", error=last_error, tables_used=tables)

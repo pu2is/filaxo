@@ -4,17 +4,18 @@ Lives only for the backend process's lifetime -- no persistence, no TTL/expiry.
 That's an intentional scope cut for the walking skeleton, not an oversight.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from uuid import uuid4
 
 
 @dataclass
 class SessionState:
     session_id: str
-    # Funnel position: "greeting" | "scope" | "time" | "ready" (state machine in service.py, #22).
+    # Funnel position: "greeting" | "time" | "ready" (state machine in service.py, #22/#25).
     step: str = "greeting"
-    # Domain keys accumulated by button clicks (subset of service.DOMAIN_LABELS).
-    selected_domains: list[str] = field(default_factory=list)
+    # Single thema key (one of service.DOMAIN_LABELS), set at "greeting". D5 moved cross-thema
+    # combination to MVP 2, so Wave 1 never accumulates more than one (#25).
+    domain: str | None = None
     # Time-range key (one of service.TIME_RANGE_LABELS), set at the "time" step; None before.
     time_range: str | None = None
 
