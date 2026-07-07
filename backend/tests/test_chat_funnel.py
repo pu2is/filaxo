@@ -105,6 +105,7 @@ def test_full_walk_to_ready_for_every_leaf(thema: str, leaf_id: str, leaf_label:
     assert "Zeitraum: 2025-10-01 bis 2025-12-31" in ready.bot_message
     assert "Stellen Sie jetzt Ihre Frage" in ready.bot_message
     assert ready.choices == []
+    assert len(ready.suggestions) > 0  # D8/#36: every real leaf has bank entries
 
 
 def test_facet_skip_leaf_goes_straight_to_ready(monkeypatch):
@@ -129,6 +130,7 @@ def test_facet_skip_leaf_goes_straight_to_ready(monkeypatch):
     assert sessions[sid].date_to is None
     assert "Stellen Sie jetzt Ihre Frage" in ready.bot_message
     assert [b.key for b in ready.scope_breadcrumb] == ["NOFACET", "OVERVIEW"]
+    assert ready.suggestions == []  # synthetic node has no bank entries -- empty, not a crash
 
 
 # --- breadcrumb truncation ---------------------------------------------------------------

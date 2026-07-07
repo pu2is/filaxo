@@ -33,12 +33,13 @@ from modules.chat.schemas import (
     ChoiceItem,
     ResultPayload,
     SourceItem,
+    SuggestionItem,
 )
 from modules.chat.session_store import SessionState, get_or_create, sessions
 from modules.query.engine import QueryOutcome, run_query
 from modules.query.schemas import TimeRange
 from modules.query.time_range import parse_time_range
-from modules.schema.leaf_question_bank import get_few_shots
+from modules.schema.leaf_question_bank import get_few_shots, get_suggestions
 from modules.schema.scope_tree import TREES, ScopeTreeError, children, is_leaf, resolve
 
 
@@ -264,6 +265,9 @@ def _ready_prompt(session: SessionState) -> ChatResponse:
         bot_message=message,
         choices=[],
         show_input=True,
+        suggestions=[
+            SuggestionItem(id=e["id"], label=e["question"]) for e in get_suggestions(session.scope_path)
+        ],
         scope_breadcrumb=_breadcrumb(session.scope_path),
     )
 

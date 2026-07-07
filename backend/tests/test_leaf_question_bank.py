@@ -6,7 +6,13 @@ what stops eval-only/known-gap questions from accidentally becoming a generate_s
 example.
 """
 
-from modules.schema.leaf_question_bank import MAX_FEW_SHOTS_PER_LEAF, get_all_entries, get_few_shots
+from modules.schema.leaf_question_bank import (
+    MAX_FEW_SHOTS_PER_LEAF,
+    MAX_SUGGESTIONS_PER_LEAF,
+    get_all_entries,
+    get_few_shots,
+    get_suggestions,
+)
 
 
 def test_get_all_entries_has_every_bucket():
@@ -64,3 +70,64 @@ def test_every_leaf_from_scope_tree_has_at_least_two_few_shots():
         for leaf in tree.leaves:
             shots = get_few_shots(leaf.id)
             assert len(shots) >= 2, f"{leaf.id} has fewer than 2 bucket-A few-shots"
+
+
+# --- get_suggestions (D8, #36) ----------------------------------------------------------
+
+
+def test_suggestions_include_every_bucket_a_entry():
+    # LEAD.SCORING has 3 bucket-A entries (one of them even carries its own `note`, which
+    # must NOT exclude it -- `note` only gates bucket B, per the ticket).
+    suggestions = get_suggestions("LEAD.SCORING")
+    a_ids = {e["id"] for e in get_all_entries() if e["node"] == "LEAD.SCORING" and e["bucket"] == "A"}
+    assert a_ids <= {s["id"] for s in suggestions}
+
+
+def test_suggestions_exclude_known_gap_bucket_b():
+    # lead_scoring_active_configs is bucket B with a `note` -- a known-gap entry, excluded.
+    suggestions = get_suggestions("LEAD.SCORING")
+    assert "lead_scoring_active_configs" not in {s["id"] for s in suggestions}
+
+
+def test_suggestions_include_bucket_b_without_note():
+    # lead_scoring_tier_actions is bucket B with no `note` -- included.
+    suggestions = get_suggestions("LEAD.SCORING")
+    assert "lead_scoring_tier_actions" in {s["id"] for s in suggestions}
+
+
+def test_suggestions_never_include_bucket_c():
+    all_entries = get_all_entries()
+    c_questions = {e["question"] for e in all_entries if e["bucket"] == "C"}
+
+    for node in {e["node"] for e in all_entries}:
+        for s in get_suggestions(node):
+            assert s["question"] not in c_questions
+
+
+def test_suggestions_capped_at_max_per_leaf():
+    for node in {e["node"] for e in get_all_entries()}:
+        assert len(get_suggestions(node)) <= MAX_SUGGESTIONS_PER_LEAF
+
+
+def test_suggestions_accepts_list_path():
+    assert get_suggestions(["LEAD", "SCORING"]) == get_suggestions("LEAD.SCORING")
+
+
+def test_suggestions_for_known_leaf_is_nonempty():
+    assert len(get_suggestions(["LEAD", "SCORING"])) > 0
+
+
+def test_suggestions_for_bucket_c_node_is_empty():
+    assert get_suggestions("ANY") == []
+
+
+def test_suggestions_for_unknown_node_is_empty():
+    assert get_suggestions("NOPE.NOPE") == []
+
+
+def test_every_leaf_from_scope_tree_has_nonempty_suggestions():
+    from modules.schema.scope_tree import TREES
+
+    for tree in TREES.values():
+        for leaf in tree.leaves:
+            assert len(get_suggestions(leaf.id)) > 0, f"{leaf.id} has no suggestion entries"
