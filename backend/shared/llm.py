@@ -29,6 +29,8 @@ class LLMProvider(Protocol):
         schema_context: str,
         few_shots: list[str],
         last_error: str | None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> SqlGenResult: ...
 
     async def extract_ranking_params(self, question: str, schema_context: str) -> RankingParams: ...
@@ -60,8 +62,10 @@ class OllamaProvider:
         schema_context: str,
         few_shots: list[str],
         last_error: str | None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> SqlGenResult:
-        prompt = build_generate_sql_prompt(question, schema_context, few_shots, last_error)
+        prompt = build_generate_sql_prompt(question, schema_context, few_shots, last_error, date_from, date_to)
         body = await self._generate_json(prompt, SqlGenResult.model_json_schema())
         return SqlGenResult.model_validate_json(body["response"])
 

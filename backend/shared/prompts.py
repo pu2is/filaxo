@@ -18,11 +18,24 @@ def build_generate_sql_prompt(
     schema_context: str,
     few_shots: list[str],
     last_error: str | None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> str:
     parts = [_INSTRUCTIONS, "", "# Schema", schema_context]
 
     if few_shots:
         parts += ["", "# Examples", "\n\n".join(few_shots)]
+
+    # Dates are computed in Python (see modules/query/schemas.TimeRange) and injected
+    # as an explicit ISO range here -- the 7B never computes "this month" itself (#24).
+    if date_from and date_to:
+        parts += [
+            "",
+            "# Time range",
+            f"Restrict the query to {date_from} through {date_to} (inclusive), applied to "
+            "the date/datetime column noted in the schema comments above. Use these exact "
+            "dates as literals; do not compute a relative range yourself.",
+        ]
 
     if last_error:
         parts += ["", "# Previous attempt failed with this error — fix it", last_error]
