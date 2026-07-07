@@ -1,9 +1,11 @@
-"""Unit tests for the Phase 1 funnel state machine (#22, simplified in #25).
+"""Unit tests for the Phase 1 funnel state machine (#22, simplified in #25, tree-drill
+added in #31).
 
-Calls service.handle_chat directly (no HTTP): the happy path and the guard cases
-(wrong action for the step, unknown payload, unknown session) -- per the ticket's
-acceptance criteria. The #25 query -> engine outcome mapping lives in
-test_chat_query.py; this file only covers funnel navigation (greeting -> time -> ready).
+Calls service.handle_chat directly (no HTTP): full walks to a leaf in both scope trees,
+breadcrumb truncation (mid-path and at the root), the facet-skip leaf case, and the
+guard cases (wrong action for the step, invalid node key, unknown payload/session) --
+per the ticket's acceptance criteria. The #25/#31 query -> engine outcome mapping lives
+in test_chat_query.py; this file only covers funnel navigation.
 """
 
 import pytest
@@ -11,6 +13,7 @@ import pytest
 from modules.chat.schemas import ChatRequest, ChatResponse
 from modules.chat.service import handle_chat
 from modules.chat.session_store import sessions
+from modules.schema.scope_tree import TREES, ScopeLeaf, ScopeTree
 
 
 @pytest.fixture(autouse=True)
@@ -29,58 +32,152 @@ def start_session() -> ChatResponse:
     return send(None, "start")
 
 
-def walk_to_time(domain: str = "LEAD") -> str:
-    """Drive a fresh session up to the time step; returns its session_id."""
+def walk_to_leaf(thema: str, leaf_id: str) -> str:
+    """Drive a fresh session to the given leaf (select_domain -> select_scope); returns
+    its session_id. Every real leaf today is exactly one select_scope click below its
+    thema (#27's trees are 2 levels deep), so this doesn't need to loop."""
     sid = start_session().session_id
-    send(sid, "select_domain", domain)
+    send(sid, "select_domain", thema)
+    send(sid, "select_scope", leaf_id)
     return sid
 
 
-def walk_to_ready(time_key: str = "THIS_MONTH") -> str:
-    sid = walk_to_time()
+def walk_to_ready(thema: str = "LEAD", leaf_id: str = "LEAD.SCORING", time_key: str = "THIS_MONTH") -> str:
+    sid = walk_to_leaf(thema, leaf_id)
     send(sid, "select_time", time_key)
     return sid
 
 
-# --- happy path ---------------------------------------------------------------------------
+ALL_LEAVES = [(tree.thema, leaf.id, leaf.label) for tree in TREES.values() for leaf in tree.leaves]
 
 
-def test_full_funnel_single_thema():
+# --- happy path: full walk in every leaf of both trees ----------------------------------
+
+
+def test_greeting_offers_every_thema():
     greeting = start_session()
-    sid = greeting.session_id
     assert "Was möchten Sie heute analysieren?" in greeting.bot_message
-    assert [c.id for c in greeting.choices] == ["LEAD", "CUSTOMER"]
+    assert {c.id for c in greeting.choices} == set(TREES.keys())
+    assert all(c.action == "select_domain" for c in greeting.choices)
+    assert greeting.scope_breadcrumb == []
 
-    # D5: picking a thema goes straight to the time step -- no add-on offer in between.
-    time_prompt = send(sid, "select_domain", "LEAD")
+
+@pytest.mark.parametrize("thema,leaf_id,leaf_label", ALL_LEAVES)
+def test_full_walk_to_ready_for_every_leaf(thema: str, leaf_id: str, leaf_label: str):
+    sid = start_session().session_id
+
+    scope_prompt = send(sid, "select_domain", thema)
+    assert sessions[sid].step == "scope"
+    assert sessions[sid].scope_path == [thema]
+    assert {c.id for c in scope_prompt.choices} == {leaf.id for leaf in TREES[thema].leaves}
+    assert all(c.action == "select_scope" for c in scope_prompt.choices)
+    assert [b.key for b in scope_prompt.scope_breadcrumb] == [thema]
+    assert [b.label for b in scope_prompt.scope_breadcrumb] == [TREES[thema].label]
+
+    time_prompt = send(sid, "select_scope", leaf_id)
+    # Every real leaf has a date facet today (#27) -- the facet-skip path is covered
+    # separately below with a synthetic leaf.
     assert sessions[sid].step == "time"
-    assert sessions[sid].domain == "LEAD"
+    assert sessions[sid].scope_path == leaf_id.split(".")
     assert "Für welchen Zeitraum" in time_prompt.bot_message
-    assert [c.id for c in time_prompt.choices] == [
-        "TODAY", "THIS_WEEK", "THIS_MONTH", "THIS_YEAR", "ALL",
-    ]
-    assert all(c.action == "select_time" for c in time_prompt.choices)
+    assert [c.id for c in time_prompt.choices] == ["TODAY", "THIS_WEEK", "THIS_MONTH", "THIS_YEAR", "ALL"]
+    assert [b.key for b in time_prompt.scope_breadcrumb] == [thema, leaf_id.split(".")[-1]]
+    assert [b.label for b in time_prompt.scope_breadcrumb] == [TREES[thema].label, leaf_label]
 
     ready = send(sid, "select_time", "THIS_MONTH")
+    assert sessions[sid].step == "ready"
+    assert sessions[sid].time_range == "THIS_MONTH"
     assert "Stellen Sie jetzt Ihre Frage" in ready.bot_message
     assert ready.choices == []
-    assert ready.show_input is True
+
+
+def test_facet_skip_leaf_goes_straight_to_ready(monkeypatch):
+    # No real leaf lacks a date facet today (#27) -- exercise the branch with a synthetic
+    # one. monkeypatch.setitem mutates the TREES dict in place (not a reassignment), so
+    # both scope_tree.py's own functions and chat.service's imported TREES name see it,
+    # and pytest reverts it automatically after the test.
+    fake_leaf = ScopeLeaf(
+        id="NOFACET.OVERVIEW", label="Testbereich", tables=["cobra.CrmLead"],
+        join_snippet=None, date_facet=None,
+    )
+    fake_tree = ScopeTree(thema="NOFACET", label="Testthema", doc_ref="docs/test.md", leaves=[fake_leaf])
+    monkeypatch.setitem(TREES, "NOFACET", fake_tree)
+
+    sid = start_session().session_id
+    send(sid, "select_domain", "NOFACET")
+    assert sessions[sid].step == "scope"
+
+    ready = send(sid, "select_scope", "NOFACET.OVERVIEW")
+    assert sessions[sid].step == "ready"
+    assert sessions[sid].time_range is None
+    assert "Stellen Sie jetzt Ihre Frage" in ready.bot_message
+    assert [b.key for b in ready.scope_breadcrumb] == ["NOFACET", "OVERVIEW"]
+
+
+# --- breadcrumb truncation ---------------------------------------------------------------
+
+
+def test_truncate_at_leaf_returns_to_scope_step_with_shrunk_breadcrumb():
+    sid = walk_to_ready("LEAD", "LEAD.SCORING", "THIS_MONTH")
+
+    response = send(sid, "truncate_scope", "SCORING")
 
     state = sessions[sid]
-    assert state.step == "ready"
-    assert state.domain == "LEAD"
+    assert state.step == "scope"
+    assert state.scope_path == ["LEAD"]
+    assert state.time_range is None  # reset, per the ticket
+    assert [b.key for b in response.scope_breadcrumb] == ["LEAD"]
+    assert {c.id for c in response.choices} == {leaf.id for leaf in TREES["LEAD"].leaves}
+
+
+def test_truncate_at_thema_returns_to_greeting():
+    sid = walk_to_ready("LEAD", "LEAD.SCORING", "THIS_MONTH")
+
+    response = send(sid, "truncate_scope", "LEAD")
+
+    state = sessions[sid]
+    assert state.step == "greeting"
+    assert state.scope_path == []
+    assert state.time_range is None
+    assert "Was möchten Sie heute analysieren?" in response.bot_message
+    assert response.scope_breadcrumb == []
+
+
+def test_truncate_works_from_the_time_step_too():
+    sid = walk_to_leaf("LEAD", "LEAD.SCORING")  # stops at "time", never reaches "ready"
+    assert sessions[sid].step == "time"
+
+    response = send(sid, "truncate_scope", "SCORING")
+
+    assert sessions[sid].step == "scope"
+    assert sessions[sid].scope_path == ["LEAD"]
+    assert [b.key for b in response.scope_breadcrumb] == ["LEAD"]
+
+
+def test_truncate_invalid_node_key_reprompts_current_step_untouched():
+    sid = walk_to_ready("LEAD", "LEAD.SCORING", "THIS_MONTH")
+
+    response = send(sid, "truncate_scope", "NOT_IN_PATH")
+
+    state = sessions[sid]
+    assert state.step == "ready"  # untouched
+    assert state.scope_path == ["LEAD", "SCORING"]
     assert state.time_range == "THIS_MONTH"
+    assert "Stellen Sie jetzt Ihre Frage" in response.bot_message
 
 
-def test_every_choice_carries_an_action():
+def test_truncate_with_no_payload_reprompts_current_step():
+    sid = walk_to_leaf("LEAD", "LEAD.SCORING")
+    response = send(sid, "truncate_scope", None)
+    assert sessions[sid].step == "time"
+    assert "Für welchen Zeitraum" in response.bot_message
+
+
+def test_truncate_at_greeting_is_a_noop_reprompt():
     sid = start_session().session_id
-    responses = [
-        send(sid, "start"),
-        send(sid, "select_domain", "LEAD"),
-    ]
-    for response in responses:
-        for choice in response.choices:
-            assert choice.action in ("select_domain", "select_time")
+    response = send(sid, "truncate_scope", "LEAD")
+    assert sessions[sid].step == "greeting"
+    assert "Was möchten Sie heute analysieren?" in response.bot_message
 
 
 # --- guard rails ---------------------------------------------------------------------------
@@ -98,25 +195,44 @@ def test_unknown_domain_payload_reprompts_greeting():
     sid = start_session().session_id
     response = send(sid, "select_domain", "FOO")
     assert "Was möchten Sie heute analysieren?" in response.bot_message
-    assert sessions[sid].domain is None
+    assert sessions[sid].scope_path == []
+
+
+def test_invalid_scope_node_key_reprompts_scope_step_unchanged():
+    sid = start_session().session_id
+    send(sid, "select_domain", "LEAD")
+
+    response = send(sid, "select_scope", "LEAD.BOGUS")
+
+    assert sessions[sid].step == "scope"
+    assert sessions[sid].scope_path == ["LEAD"]
+    assert "Bitte grenzen Sie das Thema ein" in response.bot_message
+
+
+def test_select_scope_at_greeting_reprompts_greeting():
+    sid = start_session().session_id
+    response = send(sid, "select_scope", "LEAD.SCORING")
+    assert "Was möchten Sie heute analysieren?" in response.bot_message
+    assert sessions[sid].step == "greeting"
 
 
 def test_unknown_time_payload_reprompts_time_step():
-    sid = walk_to_time()
+    sid = walk_to_leaf("LEAD", "LEAD.SCORING")
     response = send(sid, "select_time", "FOO")
     assert "Für welchen Zeitraum" in response.bot_message
     assert sessions[sid].step == "time"
     assert sessions[sid].time_range is None
 
 
-def test_select_domain_again_at_time_step_reprompts_time():
-    # A second domain pick has no add-on step to land on anymore (D5) -- it's simply
-    # not a valid action at "time", so it re-prompts the time step unchanged.
-    sid = walk_to_time("LEAD")
+def test_select_domain_again_at_scope_step_reprompts_scope():
+    sid = start_session().session_id
+    send(sid, "select_domain", "LEAD")
+
     response = send(sid, "select_domain", "CUSTOMER")
-    assert "Für welchen Zeitraum" in response.bot_message
-    assert sessions[sid].step == "time"
-    assert sessions[sid].domain == "LEAD"
+
+    assert sessions[sid].step == "scope"
+    assert sessions[sid].scope_path == ["LEAD"]
+    assert "Bitte grenzen Sie das Thema ein" in response.bot_message
 
 
 def test_unknown_session_id_restarts_funnel():
@@ -133,7 +249,7 @@ def test_restart_mid_funnel_drops_accumulated_scope():
     assert "Was möchten Sie heute analysieren?" in response.bot_message
     state = sessions[sid]
     assert state.step == "greeting"
-    assert state.domain is None
+    assert state.scope_path == []
     assert state.time_range is None
 
 

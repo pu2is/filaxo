@@ -4,19 +4,24 @@ Lives only for the backend process's lifetime -- no persistence, no TTL/expiry.
 That's an intentional scope cut for the walking skeleton, not an oversight.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import uuid4
 
 
 @dataclass
 class SessionState:
     session_id: str
-    # Funnel position: "greeting" | "time" | "ready" (state machine in service.py, #22/#25).
+    # Funnel position: "greeting" | "scope" | "time" | "ready" (state machine in service.py,
+    # #22/#25/#31).
     step: str = "greeting"
-    # Single thema key (one of service.DOMAIN_LABELS), set at "greeting". D5 moved cross-thema
-    # combination to MVP 2, so Wave 1 never accumulates more than one (#25).
-    domain: str | None = None
-    # Time-range key (one of service.TIME_RANGE_LABELS), set at the "time" step; None before.
+    # Scope-tree path walked so far, e.g. ["LEAD"] right after select_domain, then
+    # ["LEAD", "SCORING"] once a leaf is reached (#31, D5 tree drilling). Empty at
+    # "greeting". Cross-thema combination is still MVP 2 -- this path only ever has one
+    # thema as its root, never more than one tree walked at a time.
+    scope_path: list[str] = field(default_factory=list)
+    # Time-range key (one of service.TIME_RANGE_LABELS), set at the "time" step. Stays
+    # None if the leaf reached has no date facet (#31 skips the time step entirely then)
+    # or before the step is reached at all.
     time_range: str | None = None
 
 

@@ -1,8 +1,9 @@
-"""Unit tests for the #25 query -> engine -> German copy mapping.
+"""Unit tests for the #25/#31 query -> engine -> German copy mapping.
 
 `modules.chat.service.run_query` is monkeypatched -- the engine itself is already
 covered by test_query_engine.py / scripts/eval_query.py; this file only covers how
-chat/service.py reacts to each of the four QueryOutcome shapes.
+chat/service.py reacts to each of the four QueryOutcome shapes, now scoped to a
+scope-tree leaf rather than a flat thema (#31).
 """
 
 import pytest
@@ -25,9 +26,10 @@ def send(session_id: str | None, action: str, payload: str | None = None) -> Cha
     return handle_chat(ChatRequest(session_id=session_id, action=action, payload=payload))
 
 
-def walk_to_ready(domain: str = "LEAD", time_key: str = "THIS_MONTH") -> str:
+def walk_to_ready(thema: str = "LEAD", leaf_id: str = "LEAD.SCORING", time_key: str = "THIS_MONTH") -> str:
     sid = send(None, "start").session_id
-    send(sid, "select_domain", domain)
+    send(sid, "select_domain", thema)
+    send(sid, "select_scope", leaf_id)
     send(sid, "select_time", time_key)
     return sid
 
@@ -46,7 +48,7 @@ def test_success_with_rows_returns_result_payload_and_stays_ready(monkeypatch):
     response = send(sid, "query", "Wie viele Leads gibt es?")
 
     assert "Hier ist Ihr Ergebnis (1 Zeilen)" in response.bot_message
-    assert "Verkauf & Leads" in response.bot_message
+    assert "Bewertung & Scoring" in response.bot_message  # leaf label, not the thema label
     assert response.result is not None
     assert response.result.rows == [{"n": 4}]
     assert response.result.chart_type == "table"
@@ -65,7 +67,7 @@ def test_success_with_no_rows_returns_null_result_with_honest_message(monkeypatc
 
     assert response.result is None
     assert "keine Daten gefunden" in response.bot_message
-    assert "Verkauf & Leads" in response.bot_message
+    assert "Bewertung & Scoring" in response.bot_message
     assert sessions[sid].step == "ready"
 
 
@@ -95,23 +97,54 @@ def test_gave_up_returns_exact_ticket_copy(monkeypatch):
     assert sessions[sid].step == "ready"
 
 
-def test_engine_receives_domain_tables_and_resolved_time_range(monkeypatch):
+def test_engine_receives_leaf_tables_few_shots_and_resolved_time_range(monkeypatch):
     captured = {}
 
     def fake_run_query(question, tables, **kwargs):
         captured["question"] = question
         captured["tables"] = tables
         captured["time_range"] = kwargs.get("time_range")
+        captured["few_shots"] = kwargs.get("few_shots")
         return QueryOutcome(status="SUCCESS", rows=[{"n": 1}], tables_used=tables)
 
     monkeypatch.setattr(service, "run_query", fake_run_query)
 
-    sid = walk_to_ready(domain="CUSTOMER", time_key="THIS_YEAR")
+    sid = walk_to_ready(thema="CUSTOMER", leaf_id="CUSTOMER.CONTACT", time_key="THIS_YEAR")
     send(sid, "query", "Wie viele Kunden gibt es?")
 
     assert captured["question"] == "Wie viele Kunden gibt es?"
     assert captured["tables"] == ["cobra.BaAddress", "cobra.BaAddInfo"]
     assert captured["time_range"].key == "THIS_YEAR"
+    # #31: leaf-scoped few-shots (#30's loader) reach the engine, not an empty list.
+    assert captured["few_shots"] != []
+    assert all("-- Frage:" in shot for shot in captured["few_shots"])
+
+
+def test_facet_skip_leaf_passes_no_time_range(monkeypatch):
+    from modules.schema.scope_tree import TREES, ScopeLeaf, ScopeTree
+
+    fake_leaf = ScopeLeaf(
+        id="NOFACET.OVERVIEW", label="Testbereich", tables=["cobra.CrmLead"],
+        join_snippet=None, date_facet=None,
+    )
+    monkeypatch.setitem(TREES, "NOFACET", ScopeTree(thema="NOFACET", label="Testthema", doc_ref="docs/test.md", leaves=[fake_leaf]))
+
+    captured = {}
+
+    def fake_run_query(question, tables, **kwargs):
+        captured["time_range"] = kwargs.get("time_range")
+        return QueryOutcome(status="SUCCESS", rows=[{"n": 1}], tables_used=tables)
+
+    monkeypatch.setattr(service, "run_query", fake_run_query)
+
+    sid = send(None, "start").session_id
+    send(sid, "select_domain", "NOFACET")
+    send(sid, "select_scope", "NOFACET.OVERVIEW")
+    assert sessions[sid].step == "ready"  # confirms the facet-skip actually happened
+
+    send(sid, "query", "Wie viele Einträge gibt es?")
+
+    assert captured["time_range"] is None
 
 
 def test_second_query_on_same_session_works(monkeypatch):

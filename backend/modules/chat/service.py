@@ -1,28 +1,40 @@
-"""Phase 1 deterministic funnel -- UX Flow Steps 1/3/4 (greeting -> time -> ready), per
-docs/mvp-request.md and #22/#25. Button clicks alone decide the thema + time range;
-`query` at the `ready` step then runs the Big Goal 1/#24 engine and maps its outcome
-back into German copy -- the first end-to-end demo path (funnel -> real data).
+"""Phase 1 deterministic funnel -- D5 tree-drill (greeting -> scope* -> time? -> ready),
+per docs/mvp-request.md and #22/#25/#31. Button clicks alone decide the scope path (thema
+then leaf) + time range; `query` at the `ready` step runs the Big Goal 1/#24 engine with
+that leaf's tables + leaf-scoped few-shots (#30) and maps the outcome back into German copy.
 
-Per the D5 alignment (2026-07-07), cross-thema selection moved to MVP 2: the #22/#23
-scope add-on step (offer a second thema before moving on) is gone. Picking a thema at
-greeting goes straight to the time step.
+Per D5 (2026-07-07 alignment): after picking a thema the user MUST walk down to a leaf --
+there's no mid-tree stop, and "Überblick" is itself a selectable leaf for whole-thema
+questions. Both LEAD.SCORING tree and CUSTOMER tree are exactly one level deep below their
+thema today (#27), so in practice one `select_scope` click always reaches a leaf -- but the
+walk is written generically against scope_tree.children()/is_leaf() so a future 3rd level
+(sub-sub-thema) needs no funnel change, only new tree data.
 
-Guard rail: an action that doesn't fit the session's current step, or an unknown
-payload, re-sends the current step's prompt -- never a 500, never a corrupted session.
-`ready` stays `ready` after every query outcome (success, empty, refusal, or give-up),
-so a session can ask a second question without re-walking the funnel.
+The selected path is a breadcrumb (`ChatResponse.scope_breadcrumb`) the user can cut at any
+level via `truncate_scope`: that resets the path to everything before the cut node, drops
+time_range, and recomputes the current step from scratch -- cutting the thema itself returns
+to greeting. `truncate_scope` is handled before the per-step dispatch since it must work from
+any step (scope, time, or ready), not just the one it's semantically "closest" to.
+
+Guard rail: an action that doesn't fit the session's current step, an unknown node key, or
+an unknown payload re-sends the current step's prompt -- never a 500, never a corrupted
+session. `ready` stays `ready` after every query outcome (success, empty, refusal, or
+give-up), so a session can ask a second question without re-walking the funnel.
 """
 
-from modules.chat.schemas import ChatRequest, ChatResponse, ChoiceItem, ResultPayload, SourceItem
+from modules.chat.schemas import (
+    BreadcrumbItem,
+    ChatRequest,
+    ChatResponse,
+    ChoiceItem,
+    ResultPayload,
+    SourceItem,
+)
 from modules.chat.session_store import SessionState, get_or_create, sessions
 from modules.query.engine import QueryOutcome, run_query
 from modules.query.time_range import resolve_time_range
-from modules.schema.domain_tables import DOMAIN_DOC_REF, DOMAIN_TABLES
-
-DOMAIN_LABELS = {
-    "LEAD": "Verkauf & Leads",
-    "CUSTOMER": "Kunden & Adressen",
-}
+from modules.schema.leaf_question_bank import get_few_shots
+from modules.schema.scope_tree import TREES, ScopeTreeError, children, is_leaf, resolve
 
 TIME_RANGE_LABELS = {
     "TODAY": "Heute",
@@ -43,27 +55,53 @@ def handle_chat(request: ChatRequest) -> ChatResponse:
     if is_new_session or request.action == "start":
         return _greet(session)
 
+    # truncate_scope is step-agnostic by design (works from "scope", "time", or "ready"),
+    # so it's intercepted before the per-step dispatch rather than living in one handler.
+    if request.action == "truncate_scope":
+        return _safe(session, lambda: _handle_truncate(session, request))
+
     handler = _STEP_HANDLERS.get(session.step)
     if handler is None:
         # Unrecognized step value can only mean corrupted state -- reset, don't 500.
         return _greet(session)
-    return handler(session, request)
+    return _safe(session, lambda: handler(session, request))
+
+
+def _safe(session: SessionState, fn) -> ChatResponse:
+    """Belt-and-suspenders (#31): every scope_path mutation below is validated against
+    scope_tree's actual children/leaves before use, so a ScopeTreeError here should be
+    unreachable -- but if session state ever gets out of sync with the tree data (e.g. a
+    tree shrinks across a deploy while a session is mid-walk), reset rather than 500."""
+    try:
+        return fn()
+    except ScopeTreeError:
+        return _greet(session)
 
 
 # --- per-step handlers: decide the transition (or re-prompt) for the current step ------
 
 
 def _handle_greeting(session: SessionState, request: ChatRequest) -> ChatResponse:
-    if request.action == "select_domain" and request.payload in DOMAIN_LABELS:
-        session.domain = request.payload
-        return _enter_time(session)
+    if request.action == "select_domain" and request.payload in TREES:
+        session.scope_path = [request.payload]
+        return _advance_after_scope_change(session)
+    return _reprompt(session)
+
+
+def _handle_scope(session: SessionState, request: ChatRequest) -> ChatResponse:
+    if request.action == "select_scope":
+        valid_ids = {leaf.id for leaf in children(session.scope_path)}
+        if request.payload in valid_ids:
+            session.scope_path = request.payload.split(".")
+            return _advance_after_scope_change(session)
     return _reprompt(session)
 
 
 def _handle_time(session: SessionState, request: ChatRequest) -> ChatResponse:
     if request.action == "select_time" and request.payload in TIME_RANGE_LABELS:
         session.time_range = request.payload
-        return _enter_ready(session)
+        session.step = "ready"
+        return _ready_prompt(session)
     return _reprompt(session)
 
 
@@ -73,24 +111,42 @@ def _handle_ready(session: SessionState, request: ChatRequest) -> ChatResponse:
     return _reprompt(session)
 
 
+def _handle_truncate(session: SessionState, request: ChatRequest) -> ChatResponse:
+    if request.payload is None or request.payload not in session.scope_path:
+        return _reprompt(session)  # invalid node key -> re-prompt the current step, untouched
+
+    cut_at = session.scope_path.index(request.payload)
+    session.scope_path = session.scope_path[:cut_at]
+    session.time_range = None
+    if not session.scope_path:
+        return _greet(session)  # cutting the thema itself returns to greeting
+    return _advance_after_scope_change(session)
+
+
 # --- transitions: mutate the session, then emit the new step's prompt ------------------
 
 
 def _greet(session: SessionState) -> ChatResponse:
     # (Re)starting the funnel drops any previously accumulated scope, so a restarted
-    # session can never leak a stale domain/time into the new run.
+    # session can never leak a stale scope/time into the new run.
     session.step = "greeting"
-    session.domain = None
+    session.scope_path = []
     session.time_range = None
     return _greeting_prompt(session)
 
 
-def _enter_time(session: SessionState) -> ChatResponse:
-    session.step = "time"
-    return _time_prompt(session)
+def _advance_after_scope_change(session: SessionState) -> ChatResponse:
+    """Call right after session.scope_path changes (select_domain / select_scope /
+    truncate_scope): keep walking while not yet at a leaf, then skip the time step
+    entirely if the leaf reached has no date facet (#31)."""
+    if not is_leaf(session.scope_path):
+        session.step = "scope"
+        return _scope_prompt(session)
 
-
-def _enter_ready(session: SessionState) -> ChatResponse:
+    leaf = resolve(session.scope_path)
+    if leaf["facets"].get("date_column"):
+        session.step = "time"
+        return _time_prompt(session)
     session.step = "ready"
     return _ready_prompt(session)
 
@@ -111,10 +167,27 @@ def _greeting_prompt(session: SessionState) -> ChatResponse:
             "Was möchten Sie heute analysieren?"
         ),
         choices=[
-            ChoiceItem(id=domain, label=label, action="select_domain")
-            for domain, label in DOMAIN_LABELS.items()
+            ChoiceItem(id=key, label=tree.label, action="select_domain")
+            for key, tree in TREES.items()
         ],
         show_input=True,
+        scope_breadcrumb=[],
+    )
+
+
+def _scope_prompt(session: SessionState) -> ChatResponse:
+    crumb = _breadcrumb(session.scope_path)
+    picked_label = crumb[-1].label
+    node_children = children(session.scope_path)
+    return ChatResponse(
+        session_id=session.session_id,
+        bot_message=f"Sie haben {picked_label} gewählt.\nBitte grenzen Sie das Thema ein:",
+        choices=[
+            ChoiceItem(id=leaf.id, label=leaf.label, action="select_scope")
+            for leaf in node_children
+        ],
+        show_input=True,
+        scope_breadcrumb=crumb,
     )
 
 
@@ -127,43 +200,68 @@ def _time_prompt(session: SessionState) -> ChatResponse:
             for key, label in TIME_RANGE_LABELS.items()
         ],
         show_input=True,
+        scope_breadcrumb=_breadcrumb(session.scope_path),
     )
 
 
 def _ready_prompt(session: SessionState) -> ChatResponse:
-    time_label = TIME_RANGE_LABELS[session.time_range]
+    if session.time_range:
+        time_label = TIME_RANGE_LABELS[session.time_range]
+        message = f"Zeitraum: {time_label}. Stellen Sie jetzt Ihre Frage."
+    else:
+        # Facet-skip leaf (#31): no time step was ever offered, so there's no range to name.
+        message = "Stellen Sie jetzt Ihre Frage."
     return ChatResponse(
         session_id=session.session_id,
-        bot_message=f"Zeitraum: {time_label}. Stellen Sie jetzt Ihre Frage.",
+        bot_message=message,
         choices=[],
         show_input=True,
+        scope_breadcrumb=_breadcrumb(session.scope_path),
     )
 
 
-# --- query execution + outcome mapping (#25) --------------------------------------------
+# --- breadcrumb -----------------------------------------------------------------------
+
+
+def _breadcrumb(scope_path: list[str]) -> list[BreadcrumbItem]:
+    """Render scope_path as [{key, label}, ...]. Both trees are exactly thema -> leaf
+    today (#27), so this only ever handles depth 1 (thema picked) and depth 2 (leaf
+    reached); a future 3rd level would need this extended alongside scope_tree.resolve()."""
+    if not scope_path:
+        return []
+    crumbs = [BreadcrumbItem(key=scope_path[0], label=TREES[scope_path[0]].label)]
+    if len(scope_path) >= 2:
+        crumbs.append(BreadcrumbItem(key=scope_path[-1], label=resolve(scope_path)["label"]))
+    return crumbs
+
+
+# --- query execution + outcome mapping (#25, extended for leaves in #31) ----------------
 
 
 def _answer_question(session: SessionState, question: str) -> ChatResponse:
-    thema_label = DOMAIN_LABELS[session.domain]
-    tables = DOMAIN_TABLES[session.domain]
-    time_range = resolve_time_range(session.time_range)
+    leaf = resolve(session.scope_path)
+    leaf_label = leaf["label"]
+    tables = leaf["tables"]
+    time_range = resolve_time_range(session.time_range) if session.time_range else None
+    few_shots = get_few_shots(session.scope_path)
 
-    outcome = run_query(question, tables, time_range=time_range)
-    return _map_outcome(session, outcome, thema_label)
+    outcome = run_query(question, tables, time_range=time_range, few_shots=few_shots)
+    return _map_outcome(session, outcome, leaf_label)
 
 
-def _map_outcome(session: SessionState, outcome: QueryOutcome, thema_label: str) -> ChatResponse:
+def _map_outcome(session: SessionState, outcome: QueryOutcome, leaf_label: str) -> ChatResponse:
     # Every branch here keeps session.step at "ready" (we never touch it) -- a second
-    # question on the same session works without re-walking greeting/time.
+    # question on the same session works without re-walking the funnel.
     if outcome.status == "OUT_OF_SCOPE":
         return ChatResponse(
             session_id=session.session_id,
             bot_message=(
                 "Dazu habe ich keine Daten -- ich kann nur Fragen zu Ihren CRM-Daten im "
-                f"Bereich {thema_label} beantworten."
+                f"Bereich {leaf_label} beantworten."
             ),
             choices=[],
             show_input=True,
+            scope_breadcrumb=_breadcrumb(session.scope_path),
         )
 
     if outcome.status == "GAVE_UP":
@@ -172,6 +270,7 @@ def _map_outcome(session: SessionState, outcome: QueryOutcome, thema_label: str)
             bot_message="Ich konnte dazu keine gültige Abfrage erstellen. Bitte formulieren Sie die Frage anders.",
             choices=[],
             show_input=True,
+            scope_breadcrumb=_breadcrumb(session.scope_path),
         )
 
     # SUCCESS: a query that ran fine and found nothing is a distinct, honest outcome (#24)
@@ -180,14 +279,15 @@ def _map_outcome(session: SessionState, outcome: QueryOutcome, thema_label: str)
         return ChatResponse(
             session_id=session.session_id,
             bot_message=(
-                f"Dazu habe ich im Bereich {thema_label} keine Daten gefunden. Möglicherweise "
+                f"Dazu habe ich im Bereich {leaf_label} keine Daten gefunden. Möglicherweise "
                 "gibt es dazu keine Einträge, oder die Frage passt nicht zu den vorhandenen Daten."
             ),
             choices=[],
             show_input=True,
+            scope_breadcrumb=_breadcrumb(session.scope_path),
         )
 
-    doc_ref = DOMAIN_DOC_REF[session.domain]
+    doc_ref = TREES[session.scope_path[0]].doc_ref
     result = ResultPayload(
         rows=outcome.rows,
         columns=outcome.columns or [],
@@ -196,21 +296,24 @@ def _map_outcome(session: SessionState, outcome: QueryOutcome, thema_label: str)
     )
     return ChatResponse(
         session_id=session.session_id,
-        bot_message=f"Hier ist Ihr Ergebnis ({len(outcome.rows)} Zeilen). Geprüfter Bereich: {thema_label}.",
+        bot_message=f"Hier ist Ihr Ergebnis ({len(outcome.rows)} Zeilen). Geprüfter Bereich: {leaf_label}.",
         choices=[],
         show_input=True,
         result=result,
+        scope_breadcrumb=_breadcrumb(session.scope_path),
     )
 
 
 _STEP_HANDLERS = {
     "greeting": _handle_greeting,
+    "scope": _handle_scope,
     "time": _handle_time,
     "ready": _handle_ready,
 }
 
 _STEP_PROMPTS = {
     "greeting": _greeting_prompt,
+    "scope": _scope_prompt,
     "time": _time_prompt,
     "ready": _ready_prompt,
 }
