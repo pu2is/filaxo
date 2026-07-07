@@ -25,6 +25,7 @@ class FakeProvider:
     error: str | None = None
     seen_date_from: str | None = None
     seen_date_to: str | None = None
+    seen_few_shots: list[str] | None = None
 
     async def generate_sql(
         self,
@@ -37,6 +38,7 @@ class FakeProvider:
     ) -> SqlGenResult:
         self.seen_date_from = date_from
         self.seen_date_to = date_to
+        self.seen_few_shots = few_shots
         return SqlGenResult(sql=self.sql, error=self.error)
 
     async def extract_ranking_params(self, question: str, schema_context: str) -> RankingParams:
@@ -111,3 +113,23 @@ def test_success_reports_tables_used():
 def test_query_outcome_default_tables_used_is_empty_list():
     # Guards against a shared-mutable-default regression (dataclasses.field vs bare []).
     assert QueryOutcome(status="OUT_OF_SCOPE").tables_used == []
+
+
+def test_few_shots_default_is_empty_list_not_none():
+    # #30: additive param -- omitting it must behave exactly as before (empty list reaches
+    # generate_sql, never None), so a caller (like scripts/eval_query.py) that doesn't know
+    # about few_shots yet sees identical behavior to pre-#30.
+    provider = FakeProvider()
+
+    run_query("Wie viele Leads gibt es?", TABLES, provider=provider)
+
+    assert provider.seen_few_shots == []
+
+
+def test_few_shots_are_forwarded_to_provider():
+    provider = FakeProvider()
+    shots = ["-- Frage: Beispiel?\nSELECT 1"]
+
+    run_query("Wie viele Leads gibt es?", TABLES, provider=provider, few_shots=shots)
+
+    assert provider.seen_few_shots == shots

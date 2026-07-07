@@ -38,6 +38,7 @@ def run_query(
     max_attempts: int = 3,
     provider: LLMProvider | None = None,
     time_range: TimeRange | None = None,
+    few_shots: list[str] | None = None,
 ) -> QueryOutcome:
     if provider is None:
         provider = OllamaProvider()
@@ -57,9 +58,12 @@ def run_query(
                 status="SUCCESS", sql=attempt.sql, rows=attempt.rows, columns=attempt.columns, tables_used=tables
             )
 
-    # No domain<->table reverse mapping exists yet (out of scope here, see #10/#11), so
-    # few-shots can't be looked up from `tables` alone -- generate_sql runs without them.
-    few_shots: list[str] = []
+    # `few_shots` is additive (#30): the flat Wave-1 funnel still has no domain<->table
+    # reverse mapping (#10/#11) so it never passes any and generate_sql runs without them,
+    # same as before; a leaf-scoped caller can now pass modules.schema.leaf_question_bank
+    # .get_few_shots(node) here once #31 wires the tree into the funnel.
+    if few_shots is None:
+        few_shots = []
     date_from = time_range.date_from if time_range else None
     date_to = time_range.date_to if time_range else None
 

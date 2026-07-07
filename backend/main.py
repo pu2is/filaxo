@@ -8,6 +8,7 @@ from sqlalchemy.engine import Engine
 
 from modules.chat.router import router as chat_router
 from modules.schema.domain_tables import DOMAIN_TABLES
+from modules.schema.scope_tree import all_tables as scope_tree_tables
 from shared.config import settings
 from shared.db import engine as db_engine
 
@@ -23,7 +24,10 @@ def check_domain_tables_reachable(engine: Engine, domain_tables: dict[str, list[
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    check_domain_tables_reachable(db_engine, DOMAIN_TABLES)
+    # DOMAIN_TABLES covers the live flat Wave-1 funnel; SCOPE_TREE extends the same
+    # check (#30) to every table in either scope tree, since #31 hasn't wired the tree
+    # into the funnel yet -- this is the only thing exercising those tables today.
+    check_domain_tables_reachable(db_engine, {**DOMAIN_TABLES, "SCOPE_TREE": scope_tree_tables()})
     yield
 
 

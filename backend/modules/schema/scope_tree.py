@@ -200,3 +200,88 @@ LEFT JOIN cobra.BaAddInfo i ON i.InfoId = a.AddressId""",
 
 
 TREES: dict[str, ScopeTree] = {"LEAD": LEAD_TREE, "CUSTOMER": CUSTOMER_TREE}
+
+
+class ScopeTreeError(Exception):
+    """Raised when a path doesn't resolve to a real thema/leaf -- never a bare KeyError/
+    IndexError, so a caller (or #31's funnel) gets a message naming what WAS valid."""
+
+
+def _normalize_path(path: str | list[str]) -> list[str]:
+    """Accept either a dot-joined string ("LEAD.SCORING") or a list (["LEAD", "SCORING"])
+    -- both notations appear in #30's own ticket text, so support both rather than
+    picking one and quietly breaking the other."""
+    if isinstance(path, str):
+        return path.split(".") if path else []
+    return list(path)
+
+
+def children(path: str | list[str]) -> list[str] | list[ScopeLeaf]:
+    """Return what's selectable one level below `path`.
+
+    `children([])` -> the thema keys ("LEAD", "CUSTOMER"). `children("LEAD")` -> that
+    thema's leaves. Both trees are exactly 2 levels deep (thema -> leaf) today, so a
+    leaf (or deeper/bogus) path always has no further children -- #27's tree design
+    allows a 3rd level for a future thema that needs sub-sub-thema drilling.
+    """
+    parts = _normalize_path(path)
+    if not parts:
+        return list(TREES.keys())
+    if len(parts) == 1:
+        tree = TREES.get(parts[0])
+        if tree is None:
+            raise ScopeTreeError(f"unknown thema {parts[0]!r} -- known themas: {list(TREES.keys())}")
+        return list(tree.leaves)
+    return []
+
+
+def is_leaf(path: str | list[str]) -> bool:
+    """True iff `path` names an existing leaf exactly. Never raises -- an unknown thema
+    or a too-short/too-long path is just "not a leaf", not an error (unlike `resolve`)."""
+    parts = _normalize_path(path)
+    if len(parts) != 2:
+        return False
+    tree = TREES.get(parts[0])
+    if tree is None:
+        return False
+    target = ".".join(parts)
+    return any(leaf.id == target for leaf in tree.leaves)
+
+
+def resolve(path: str | list[str]) -> dict:
+    """Resolve a leaf path to {tables, join_snippet, facets, label}.
+
+    Raises ScopeTreeError for anything that isn't an exact, existing leaf -- a thema-only
+    path, an unknown thema, or an unknown leaf name all have nothing sensible to return.
+    """
+    parts = _normalize_path(path)
+    if len(parts) != 2:
+        raise ScopeTreeError(f"{'.'.join(parts) or '(empty)'!r} is not a leaf path (expected thema.leaf)")
+
+    thema = parts[0]
+    tree = TREES.get(thema)
+    if tree is None:
+        raise ScopeTreeError(f"unknown thema {thema!r} -- known themas: {list(TREES.keys())}")
+
+    target = ".".join(parts)
+    for leaf in tree.leaves:
+        if leaf.id == target:
+            return {
+                "tables": list(leaf.tables),
+                "join_snippet": leaf.join_snippet,
+                "facets": {"date_column": leaf.date_facet} if leaf.date_facet else {},
+                "label": leaf.label,
+            }
+    known = [leaf.id for leaf in tree.leaves]
+    raise ScopeTreeError(f"unknown leaf {target!r} under thema {thema!r} -- known leaves: {known}")
+
+
+def all_tables() -> list[str]:
+    """Union of every leaf's tables across both trees -- extends #25's startup self-check
+    (main.py) so a missing/renamed table anywhere in the tree, not just the flat Wave-1
+    DOMAIN_TABLES set, fails loudly at boot instead of on first use (#30)."""
+    seen: set[str] = set()
+    for tree in TREES.values():
+        for leaf in tree.leaves:
+            seen.update(leaf.tables)
+    return sorted(seen)
