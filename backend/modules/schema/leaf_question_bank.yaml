@@ -1,0 +1,402 @@
+# Per-leaf question bank for the LEAD + CUSTOMER scope trees (#29).
+#
+# Sources: each theme doc's "现实中容易出现的问题" table, docs/check_crm.md's 2026-07-04
+# DB-verified findings (re-verified live here on 2026-07-07 -- row counts/values can drift,
+# see docs/scope-trees.md Known Gaps), and #27/#28's own live-verified schema knowledge.
+#
+# Bank != prompt (#29): only the top 2-3 "verified: true, bucket: A" entries per leaf are
+# meant to ever become a generate_sql few-shot -- the loader (#30) does that selection, not
+# this file. Every entry still gets its own id/node/bucket for the eval harness either way.
+#
+# Fields:
+#   id            unique slug
+#   node          scope-tree leaf id (e.g. "LEAD.SCORING") the question belongs to, or "ANY"
+#                 for bucket C out-of-scope probes that aren't tied to any one leaf
+#   bucket        A = covered + verified (few-shot candidate)
+#                 B = plausible in-domain, deliberately held out of few-shots (eval-only --
+#                     either genuinely fine but kept for eval diversity, or a "known gap"
+#                     question the current sample data can't answer well; see `note`)
+#                 C = irrelevant / out-of-scope probe, must come back OUT_OF_SCOPE
+#   question      natural-language question, German (matches the chat UI's language)
+#   reference_sql hand-verified T-SQL, or omitted for bucket C (no correct SQL exists)
+#   verified      true iff reference_sql was run against the live DB and its result checked
+#   row_count     row count observed on 2026-07-07 (for eval "sensible result" comparisons;
+#                  sample data can drift, per project convention -- see scripts/eval_query.py)
+#   chart_hint    bar | line | kpi | table (MVP1 Wave 1 only ever renders "table", #25/#26 --
+#                  this is forward-looking metadata for BG5's chart heuristics)
+#   note          only present for bucket B entries that need explaining (empty result vs.
+#                  known data-quality gap)
+
+# --- LEAD.OVERVIEW --------------------------------------------------------------------
+- id: lead_overview_active_count
+  node: LEAD.OVERVIEW
+  bucket: A
+  question: "Wie viele aktive Leads haben wir insgesamt?"
+  reference_sql: |
+    SELECT COUNT(*) AS ActiveLeadCount
+    FROM cobra.CrmLead
+    WHERE IsDeleted = 0
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: lead_overview_highest_score
+  node: LEAD.OVERVIEW
+  bucket: A
+  question: "Welcher Lead hat den höchsten Score?"
+  reference_sql: |
+    SELECT TOP 5 Id, FirstName, LastName, Score, Brand
+    FROM cobra.CrmLead
+    WHERE IsDeleted = 0 AND Score IS NOT NULL
+    ORDER BY Score DESC
+  verified: true
+  row_count: 1
+  chart_hint: table
+
+- id: lead_overview_by_brand
+  node: LEAD.OVERVIEW
+  bucket: B
+  question: "Für welche Marken interessieren sich unsere aktiven Leads?"
+  reference_sql: |
+    SELECT Brand, COUNT(*) AS LeadCount
+    FROM cobra.CrmLead
+    WHERE IsDeleted = 0 AND Brand IS NOT NULL AND Brand != ''
+    GROUP BY Brand
+    ORDER BY LeadCount DESC
+  verified: true
+  row_count: 4
+  chart_hint: bar
+  note: "Already one of the 3 flat-funnel few-shots in question_bank.yaml (#11/Wave 1) -- held out here so LEAD.OVERVIEW's own few-shot slate isn't just a duplicate of that set."
+
+# --- LEAD.ACTIVITY ----------------------------------------------------------------------
+- id: lead_activity_contact_history_count
+  node: LEAD.ACTIVITY
+  bucket: A
+  question: "Wie viele Einträge gibt es insgesamt in der Kontakthistorie?"
+  reference_sql: |
+    SELECT COUNT(*) AS ContactHistoryCount
+    FROM cobra.CrmLeadContactHistory
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: lead_activity_deletion_restorable
+  node: LEAD.ACTIVITY
+  bucket: A
+  question: "Wie viele gelöschte Leads könnten wiederhergestellt werden?"
+  reference_sql: |
+    SELECT COUNT(*) AS RestorableDeletedLeads
+    FROM cobra.CrmLeadDeletionLog
+    WHERE CanRestore = 1
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: lead_activity_status_changes
+  node: LEAD.ACTIVITY
+  bucket: A
+  question: "Wie oft hat sich der Status von Leads insgesamt geändert?"
+  reference_sql: |
+    SELECT COUNT(*) AS StatusChanges
+    FROM cobra.CrmStatusLog
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: lead_activity_neglected_high_score
+  node: LEAD.ACTIVITY
+  bucket: B
+  question: "Welche Leads mit hohem Score hatten seit über 14 Tagen keine Aktivität?"
+  reference_sql: |
+    SELECT Id, FirstName, LastName, Score, LastActivityDate,
+           DATEDIFF(DAY, LastActivityDate, GETDATE()) AS DaysSinceActivity
+    FROM cobra.CrmLead
+    WHERE Score > 50 AND IsDeleted = 0
+      AND LastActivityDate IS NOT NULL
+      AND DATEDIFF(DAY, LastActivityDate, GETDATE()) > 14
+    ORDER BY Score DESC
+  verified: true
+  row_count: 0
+  chart_hint: table
+  note: "The doc's flagship 'neglected high-score lead' problem (现实中容易出现的问题) -- SQL is correct and runs, but 0 rows in this sample: with only 4 active leads and Score NULL for most, none currently satisfies both conditions at once. Legitimate empty result, not a data-quality gap -- held out of few-shots so the model doesn't learn 'this always returns rows'."
+
+- id: lead_activity_recent_contact_attempts
+  node: LEAD.ACTIVITY
+  bucket: B
+  question: "Wie viele Kontaktversuche (Anrufe/E-Mails) gab es in den letzten 7 Tagen?"
+  reference_sql: |
+    SELECT COUNT(*) AS RecentActivityCount
+    FROM cobra.CrmLeadActivity
+    WHERE Date >= DATEADD(DAY, -7, GETDATE())
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "KNOWN GAP: CrmLeadActivity has 0 rows in this sample (see docs/scope-trees.md) -- any question against it returns an honest 0, forever, until real activity data exists. Kept as a realistic CRM-expert question and flagged verified/held-out rather than deleted, per #29's own instruction to log unanswerable-for-now questions instead of hiding them."
+
+# --- LEAD.SCORING -------------------------------------------------------------------------
+- id: lead_scoring_tier_distribution
+  node: LEAD.SCORING
+  bucket: A
+  question: "Wie verteilen sich unsere aktiven Leads auf die Bewertungsstufen (Tiers)?"
+  reference_sql: |
+    SELECT t.Name AS Tier, t.ContactTimeframeHours AS SlaHours, COUNT(s.Id) AS ActiveLeadCount
+    FROM cobra.CrmLeadTiers t
+    LEFT JOIN cobra.CrmLeadScores s ON s.TierId = t.Id AND s.IsActive = 1
+    GROUP BY t.Name, t.ContactTimeframeHours, t.DisplayOrder
+    ORDER BY t.DisplayOrder
+  verified: true
+  row_count: 9
+  chart_hint: bar
+  note: "Two tiers ('Hot Lead', 'Platin Lead') share DisplayOrder=1 -- likely two parallel scoring configs' top tiers (CrmScoringConfigs has 3 configs). Not a bug, just means 'the top tier' is ambiguous by name alone; the query above is safe because it doesn't pick just one."
+
+- id: lead_scoring_avg_score
+  node: LEAD.SCORING
+  bucket: A
+  question: "Wie hoch ist der durchschnittliche aktive Score über alle Leads?"
+  reference_sql: |
+    SELECT AVG(TotalScore) AS AvgActiveScore
+    FROM cobra.CrmLeadScores
+    WHERE IsActive = 1
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: lead_scoring_criteria_breakdown
+  node: LEAD.SCORING
+  bucket: A
+  question: "Welche Bewertungskriterien tragen im Schnitt am meisten zum Score bei?"
+  reference_sql: |
+    SELECT crit.Name AS Criterion, AVG(CAST(cs.Points AS FLOAT)) AS AvgPoints, COUNT(*) AS TimesScored
+    FROM cobra.CrmLeadCriterionScores cs
+    JOIN cobra.CrmScoringCriteria crit ON crit.Id = cs.CriteriaId
+    GROUP BY crit.Name
+    ORDER BY AvgPoints DESC
+  verified: true
+  row_count: 10
+  chart_hint: bar
+
+- id: lead_scoring_active_configs
+  node: LEAD.SCORING
+  bucket: B
+  question: "Wie viele aktive Bewertungskonfigurationen sind aktuell im Einsatz?"
+  reference_sql: |
+    SELECT COUNT(*) AS ActiveScoringConfigs
+    FROM cobra.CrmScoringConfigs
+    WHERE IsDeleted = 0 AND IsActive = 1
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "Held out as a 'meta' question about the scoring system's own configuration rather than about leads -- kept for eval diversity, not promoted to few-shot."
+
+- id: lead_scoring_tier_actions
+  node: LEAD.SCORING
+  bucket: B
+  question: "Welche automatisierten Aktionen sind je Bewertungsstufe hinterlegt?"
+  reference_sql: |
+    SELECT t.Name AS Tier, t.DisplayOrder, ta.ActionType, ta.Config
+    FROM cobra.CrmTierActions ta
+    JOIN cobra.CrmLeadTiers t ON t.Id = ta.TierId
+    WHERE ta.IsActive = 1
+    ORDER BY t.DisplayOrder
+  verified: true
+  row_count: 10
+  chart_hint: table
+
+# --- LEAD.TASKS -----------------------------------------------------------------------
+- id: lead_tasks_overdue
+  node: LEAD.TASKS
+  bucket: A
+  question: "Welche Aufgaben sind überfällig und noch nicht erledigt?"
+  reference_sql: |
+    SELECT Title, DueDate, AssignedTo
+    FROM cobra.CrmTasks
+    WHERE IsActive = 1 AND CAST(DueDate AS date) < CAST(GETDATE() AS date)
+    ORDER BY DueDate
+  verified: true
+  row_count: 16
+  chart_hint: table
+
+- id: lead_tasks_pending_resubmissions
+  node: LEAD.TASKS
+  bucket: A
+  question: "Welche Wiedervorlagen stehen in den nächsten 7 Tagen an?"
+  reference_sql: |
+    SELECT Title, ReminderDate, AssignedTo, IsPriority
+    FROM cobra.CrmResubmissions
+    WHERE IsDeleted = 0 AND Status = 'pending' AND ReminderDate <= DATEADD(DAY, 7, GETDATE())
+    ORDER BY IsPriority DESC, ReminderDate
+  verified: true
+  row_count: 4
+  chart_hint: table
+
+- id: lead_tasks_priority_resubmissions
+  node: LEAD.TASKS
+  bucket: B
+  question: "Wie viele Wiedervorlagen sind als besonders dringend markiert?"
+  reference_sql: |
+    SELECT COUNT(*) AS PriorityResubmissions
+    FROM cobra.CrmResubmissions
+    WHERE IsDeleted = 0 AND IsPriority = 1
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+# --- LEAD.AUTOMATION --------------------------------------------------------------------
+- id: lead_automation_active_rules
+  node: LEAD.AUTOMATION
+  bucket: A
+  question: "Wie viele Automatisierungsregeln sind aktuell aktiv?"
+  reference_sql: |
+    SELECT COUNT(*) AS ActiveRules
+    FROM cobra.CrmAutomationRules
+    WHERE IsActive = 1
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: lead_automation_scheduled_pending
+  node: LEAD.AUTOMATION
+  bucket: A
+  question: "Wie viele geplante Automatisierungsaktionen wurden noch nicht ausgeführt?"
+  reference_sql: |
+    SELECT COUNT(*) AS PendingScheduledActions
+    FROM cobra.CrmScheduledActions
+    WHERE Executed = 0
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: lead_automation_conditions_per_rule
+  node: LEAD.AUTOMATION
+  bucket: B
+  question: "Wie viele Bedingungen hat jede Automatisierungsregel?"
+  reference_sql: |
+    SELECT r.Name, COUNT(c.Id) AS ConditionCount
+    FROM cobra.CrmAutomationRules r
+    LEFT JOIN cobra.CrmAutomationConditions c ON c.RuleId = r.Id
+    GROUP BY r.Name
+  verified: true
+  row_count: 3
+  chart_hint: bar
+
+# --- CUSTOMER.OVERVIEW ------------------------------------------------------------------
+- id: customer_overview_total
+  node: CUSTOMER.OVERVIEW
+  bucket: A
+  question: "Wie viele Kunden sind insgesamt im System erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS CustomerCount
+    FROM cobra.BaAddress
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: customer_overview_top_city
+  node: CUSTOMER.OVERVIEW
+  bucket: A
+  question: "In welcher Stadt haben wir die meisten Kunden?"
+  reference_sql: |
+    SELECT TOP 1 City, COUNT(*) AS CustomerCount
+    FROM cobra.BaAddress
+    WHERE City IS NOT NULL AND City != ''
+    GROUP BY City
+    ORDER BY CustomerCount DESC
+  verified: true
+  row_count: 1
+  chart_hint: table
+
+- id: customer_overview_new_trend
+  node: CUSTOMER.OVERVIEW
+  bucket: B
+  question: "Wie viele neue Kunden sind in den letzten 12 Monaten hinzugekommen?"
+  reference_sql: |
+    SELECT FORMAT(CreateDate, 'yyyy-MM') AS Month, COUNT(*) AS NewCustomers
+    FROM cobra.BaAddress
+    WHERE CreateDate >= DATEADD(YEAR, -1, GETDATE())
+    GROUP BY FORMAT(CreateDate, 'yyyy-MM')
+    ORDER BY Month
+  verified: true
+  row_count: 3
+  chart_hint: line
+  note: "Held out for eval diversity (a trend/line-shaped question vs. the scalar A entries above). Only 3 months have any rows (2025-11, 2026-04, 2026-05) -- no new customers in June/July 2026 in this sample, which is a legitimate gap in the data's recency, not a query bug."
+
+# --- CUSTOMER.CONTACT -------------------------------------------------------------------
+- id: customer_contact_coverage
+  node: CUSTOMER.CONTACT
+  bucket: A
+  question: "Wie viele Kunden haben mindestens eine hinterlegte Kontaktmöglichkeit?"
+  reference_sql: |
+    SELECT COUNT(DISTINCT i.InfoId) AS CustomersWithContactInfo
+    FROM cobra.BaAddInfo i
+    JOIN cobra.BaAddress a ON a.AddressId = i.InfoId
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: customer_contact_avg_per_customer
+  node: CUSTOMER.CONTACT
+  bucket: A
+  question: "Wie viele Kontaktinformationen hat ein Kunde im Durchschnitt hinterlegt?"
+  reference_sql: |
+    SELECT AVG(CAST(cnt AS FLOAT)) AS AvgContactsPerCustomer
+    FROM (SELECT COUNT(*) AS cnt FROM cobra.BaAddInfo GROUP BY InfoId) t
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: customer_contact_orphaned
+  node: CUSTOMER.CONTACT
+  bucket: B
+  question: "Wie viele Kontaktinformationen sind keinem existierenden Kunden zugeordnet?"
+  reference_sql: |
+    SELECT COUNT(*) AS OrphanedContactInfo
+    FROM cobra.BaAddInfo i
+    LEFT JOIN cobra.BaAddress a ON a.AddressId = i.InfoId
+    WHERE a.AddressId IS NULL
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "KNOWN GAP: demonstrates the ~52% BaAddInfo orphan rate already documented in #27/#28 (3573 of 6920 rows). Legitimate, verified, non-zero result -- held out of few-shots because it's about data quality, not a question a dealership user would typically ask; kept for eval so the model's handling of a 'large orphan count' scenario is tested."
+
+# --- Bucket C: out-of-scope probes (not leaf-specific) ----------------------------------
+- id: probe_weather
+  node: ANY
+  bucket: C
+  question: "Wie wird das Wetter morgen?"
+  verified: false
+  chart_hint: null
+
+- id: probe_joke
+  node: ANY
+  bucket: C
+  question: "Erzähl mir einen Witz."
+  verified: false
+  chart_hint: null
+
+- id: probe_capital_city
+  node: ANY
+  bucket: C
+  question: "Wie lautet die Hauptstadt von Frankreich?"
+  verified: false
+  chart_hint: null
+
+- id: probe_recipe
+  node: ANY
+  bucket: C
+  question: "Kannst du mir ein Rezept für Apfelkuchen geben?"
+  verified: false
+  chart_hint: null
+
+- id: probe_math
+  node: ANY
+  bucket: C
+  question: "Was ist die Ableitung von x²?"
+  verified: false
+  chart_hint: null
+
+- id: probe_stock_price
+  node: ANY
+  bucket: C
+  question: "Wie ist der aktuelle Aktienkurs von Volkswagen?"
+  verified: false
+  chart_hint: null
