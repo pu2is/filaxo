@@ -8,7 +8,7 @@ AI-powered chatbot for Filax.One, a CRM system for automotive dealerships. Users
 
 Instead of dropping users in front of a blank prompt box, the bot leads a **guided funnel**: the user walks down a **thema tree** (theme → sub-theme → sub-sub-theme, max 3 levels — one tree per database domain doc in `docs/`, see decision D5 in [`docs/mvp-request.md`](docs/mvp-request.md)) until the query scope is a small, well-defined set of tables, then picks search conditions (e.g. time range) derived from what those tables actually support. Only at that point does the local LLM translate the natural-language question into T-SQL against that narrow scope — which is what keeps a 7B model accurate and hallucination-poor by construction. Results render as tables (charts, narration, and a pinnable live dashboard follow).
 
-**Status:** Phase 1 button funnel works end-to-end in the browser; the NL→SQL core is validated standalone via the CLI eval harness (see [AI Core Eval](#ai-core-eval-run_query)); wiring funnel → engine (Big Goal 4) is next.
+**Status:** First full demo: funnel → question → live data table. Click through the guided funnel, type a natural-language question, and see a real result table rendered from the CRM database (Big Goal 4, Wave 1). Charts, narration, and the pinnable dashboard follow.
 
 _TODO: demo screenshot/GIF._
 

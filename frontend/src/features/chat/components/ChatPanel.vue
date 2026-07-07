@@ -22,8 +22,9 @@ function handleChoice(choice: ChoiceItem) {
 }
 
 function handleSubmit(text: string) {
-  // Free-text/query wiring lands in a later goal -- see #20's scope cut.
-  console.log('query submitted:', text)
+  // Big Goal 4 marker (#26): the typed question goes to the backend as a real
+  // "query" action -- payload and the echoed user-reply text are the same string.
+  chat.sendAction('query', text, text)
 }
 </script>
 
@@ -40,12 +41,12 @@ function handleSubmit(text: string) {
         Neu starten
       </button>
     </header>
-    <MessageHistory :history="chat.history" />
+    <MessageHistory :history="chat.history" :is-loading="chat.isLoading" />
     <div v-if="chat.activeChoices.length" class="shrink-0 border-t border-border p-4">
       <ChoiceGroup :choices="chat.activeChoices" :disabled="chat.isLoading" @select="handleChoice" />
     </div>
     <div class="shrink-0 border-t border-border p-4">
-      <QueryInput @submit="handleSubmit" />
+      <QueryInput :disabled="chat.isLoading" @submit="handleSubmit" />
     </div>
   </div>
 </template>

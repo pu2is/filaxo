@@ -1,6 +1,7 @@
-// Mirrors backend/modules/chat/schemas.py field-for-field (see #18) -- keep names and
-// optionality in sync with that file, not camelCase-converted, so there's no translation
-// layer to keep in sync on top of the contract itself.
+// Mirrors backend/modules/chat/schemas.py field-for-field (see #18, updated in #26 for
+// ResultPayload/#25) -- keep names and optionality in sync with that file, not
+// camelCase-converted, so there's no translation layer to keep in sync on top of the
+// contract itself.
 
 export interface ChoiceItem {
   id: string // sent back as ChatRequest.payload when the choice is clicked
@@ -13,18 +14,32 @@ export interface SuggestionItem {
   label: string
 }
 
-export type ChatAction =
-  | 'start'
-  | 'select_domain'
-  | 'confirm_domain'
-  | 'select_time'
-  | 'proceed'
-  | 'query'
+// 'proceed' (the BG3 scope add-on's skip action) was removed backend-side in #25 --
+// D5 moved cross-thema selection to MVP 2, so there's no add-on step to skip anymore.
+export type ChatAction = 'start' | 'select_domain' | 'confirm_domain' | 'select_time' | 'query'
 
 export interface ChatRequest {
   session_id?: string | null
   action: ChatAction
   payload?: string | null
+}
+
+export interface SourceItem {
+  table: string
+  doc_ref: string
+}
+
+export interface ResultColumn {
+  name: string
+  type: string | null
+}
+
+export interface ResultPayload {
+  rows: Record<string, unknown>[]
+  columns: ResultColumn[]
+  chart_type: 'table'
+  sql: string | null
+  sources: SourceItem[]
 }
 
 export interface ChatResponse {
@@ -33,7 +48,7 @@ export interface ChatResponse {
   choices: ChoiceItem[]
   suggestions: SuggestionItem[]
   show_input: boolean
-  result: Record<string, unknown> | null
+  result: ResultPayload | null
 }
 
 // --- Frontend-only view types below: NOT part of the backend contract. ---
