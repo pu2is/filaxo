@@ -26,7 +26,11 @@ export type ChatAction =
   | 'select_scope'
   | 'truncate_scope'
   | 'confirm_domain'
-  | 'select_time'
+  | 'set_time_range'
+  | 'continue_topic'
+  | 'change_topic'
+  | 'change_time_range'
+  | 'keep_time_range'
   | 'query'
 
 export interface ChatRequest {

@@ -21,7 +21,22 @@ from pydantic import BaseModel
 # forms were frozen in mvp-request.md's API contract before this ticket implemented them.
 # "set_time_range" (D6, #34) replaces "select_time": the user enters date_from/date_to
 # directly instead of picking a relative-time preset -- see ChatRequest below.
-ChatAction = Literal["start", "select_domain", "select_scope", "truncate_scope", "confirm_domain", "set_time_range", "query"]
+# "continue_topic"/"change_topic"/"change_time_range"/"keep_time_range" (D7, #35) are the
+# post-answer follow-up choices attached to every query outcome -- see service.py's
+# "followup"/"time_offer" steps.
+ChatAction = Literal[
+    "start",
+    "select_domain",
+    "select_scope",
+    "truncate_scope",
+    "confirm_domain",
+    "set_time_range",
+    "continue_topic",
+    "change_topic",
+    "change_time_range",
+    "keep_time_range",
+    "query",
+]
 
 
 class ChoiceItem(BaseModel):

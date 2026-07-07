@@ -1,7 +1,10 @@
 """Phase 1 deterministic funnel -- D5 tree-drill (greeting -> scope* -> time? -> ready),
-per docs/mvp-request.md and #22/#25/#31. Button clicks alone decide the scope path (thema
-then leaf) + time range; `query` at the `ready` step runs the Big Goal 1/#24 engine with
-that leaf's tables + leaf-scoped few-shots (#30) and maps the outcome back into German copy.
+per docs/mvp-request.md and #22/#25/#31/#34/#35. Button clicks alone decide the scope path
+(thema then leaf) + time range; `query` at the `ready` step runs the Big Goal 1/#24 engine
+with that leaf's tables + leaf-scoped few-shots (#30) and maps the outcome back into German
+copy. Every outcome (D7, #35) then lands on `followup`, offering "continue this topic" or
+"switch topic" on the very same response -- continuing re-offers the Zeitraum (`time_offer`)
+only if the leaf has a date facet, otherwise it goes straight back to `ready`.
 
 Per D5 (2026-07-07 alignment): after picking a thema the user MUST walk down to a leaf --
 there's no mid-tree stop, and "Überblick" is itself a selectable leaf for whole-thema
@@ -18,8 +21,9 @@ any step (scope, time, or ready), not just the one it's semantically "closest" t
 
 Guard rail: an action that doesn't fit the session's current step, an unknown node key, or
 an unknown payload re-sends the current step's prompt -- never a 500, never a corrupted
-session. `ready` stays `ready` after every query outcome (success, empty, refusal, or
-give-up), so a session can ask a second question without re-walking the funnel.
+session. Every query outcome (success, empty, refusal, or give-up) moves to `followup`
+rather than staying at `ready` -- the follow-up choices are how a session gets back to
+`ready` for a second question, per D7.
 """
 
 from modules.chat.schemas import (
@@ -110,6 +114,30 @@ def _handle_ready(session: SessionState, request: ChatRequest) -> ChatResponse:
     return _reprompt(session)
 
 
+def _handle_followup(session: SessionState, request: ChatRequest) -> ChatResponse:
+    if request.action == "continue_topic":
+        leaf = resolve(session.scope_path)
+        if leaf["facets"].get("date_column"):
+            session.step = "time_offer"
+            return _time_offer_prompt(session)
+        session.step = "ready"
+        return _ready_prompt(session)
+    if request.action == "change_topic":
+        return _switch_topic(session)
+    return _reprompt(session)
+
+
+def _handle_time_offer(session: SessionState, request: ChatRequest) -> ChatResponse:
+    if request.action == "change_time_range":
+        session.step = "time"
+        return _time_prompt(session)
+    if request.action == "keep_time_range":
+        # Dates are left untouched -- "keep" means exactly that (#35).
+        session.step = "ready"
+        return _ready_prompt(session)
+    return _reprompt(session)
+
+
 def _handle_truncate(session: SessionState, request: ChatRequest) -> ChatResponse:
     if request.payload is None or request.payload not in session.scope_path:
         return _reprompt(session)  # invalid node key -> re-prompt the current step, untouched
@@ -136,6 +164,17 @@ def _greet(session: SessionState) -> ChatResponse:
     return _greeting_prompt(session)
 
 
+def _switch_topic(session: SessionState) -> ChatResponse:
+    """change_topic from the followup step (D7, #35): same reset as _greet, but with the
+    lightweight "switch topic" opening instead of the full "Guten Tag" greeting -- this
+    isn't a session restart, it's a continuation of the same conversation."""
+    session.step = "greeting"
+    session.scope_path = []
+    session.date_from = None
+    session.date_to = None
+    return _greeting_prompt(session, is_switch=True)
+
+
 def _advance_after_scope_change(session: SessionState) -> ChatResponse:
     """Call right after session.scope_path changes (select_domain / select_scope /
     truncate_scope): keep walking while not yet at a leaf, then skip the time step
@@ -160,13 +199,17 @@ def _reprompt(session: SessionState) -> ChatResponse:
     return _STEP_PROMPTS[session.step](session)
 
 
-def _greeting_prompt(session: SessionState) -> ChatResponse:
+def _greeting_prompt(session: SessionState, is_switch: bool = False) -> ChatResponse:
+    # is_switch (D7, #35): change_topic lands here via a lighter opening line -- the user
+    # is mid-conversation, not starting fresh.
+    message = (
+        "Kein Problem — welches Thema möchten Sie stattdessen analysieren?"
+        if is_switch
+        else "Guten Tag! Ich bin Ihr CRM-Assistent für FilaksOne.\nWas möchten Sie heute analysieren?"
+    )
     return ChatResponse(
         session_id=session.session_id,
-        bot_message=(
-            "Guten Tag! Ich bin Ihr CRM-Assistent für FilaksOne.\n"
-            "Was möchten Sie heute analysieren?"
-        ),
+        bot_message=message,
         choices=[
             ChoiceItem(id=key, label=tree.label, action="select_domain")
             for key, tree in TREES.items()
@@ -225,6 +268,41 @@ def _ready_prompt(session: SessionState) -> ChatResponse:
     )
 
 
+# Follow-up choices (D7, #35) attached to every query outcome -- see _with_followup below.
+FOLLOWUP_CHOICES = [
+    ChoiceItem(id="continue", label="Weitere Frage zu diesem Thema", action="continue_topic"),
+    ChoiceItem(id="switch", label="Anderes Thema wählen", action="change_topic"),
+]
+
+TIME_OFFER_CHOICES = [
+    ChoiceItem(id="change", label="Ja, Zeitraum ändern", action="change_time_range"),
+    ChoiceItem(id="keep", label="Nein, Zeitraum beibehalten", action="keep_time_range"),
+]
+
+
+def _followup_prompt(session: SessionState) -> ChatResponse:
+    """Guard-rail reprompt for the "followup" step -- the answer that got us here isn't
+    re-shown (it's not retained past that one response), only the follow-up question
+    itself, same as every other step's reprompt."""
+    return ChatResponse(
+        session_id=session.session_id,
+        bot_message="Möchten Sie zu diesem Thema weitere Fragen stellen, oder ein anderes Thema auswählen?",
+        choices=FOLLOWUP_CHOICES,
+        show_input=True,
+        scope_breadcrumb=_breadcrumb(session.scope_path),
+    )
+
+
+def _time_offer_prompt(session: SessionState) -> ChatResponse:
+    return ChatResponse(
+        session_id=session.session_id,
+        bot_message="Möchten Sie den Zeitraum ändern?",
+        choices=TIME_OFFER_CHOICES,
+        show_input=True,
+        scope_breadcrumb=_breadcrumb(session.scope_path),
+    )
+
+
 # --- breadcrumb -----------------------------------------------------------------------
 
 
@@ -258,42 +336,42 @@ def _answer_question(session: SessionState, question: str) -> ChatResponse:
     return _map_outcome(session, outcome, leaf_label)
 
 
+def _with_followup(session: SessionState, bot_message: str, result: ResultPayload | None = None) -> ChatResponse:
+    """Shared response builder for all four QueryOutcome branches (D7, #35): every one of
+    them lands on "followup" and carries the same continue/switch choices alongside
+    whatever bot_message/result is specific to that outcome -- one response, no extra
+    round-trip."""
+    session.step = "followup"
+    return ChatResponse(
+        session_id=session.session_id,
+        bot_message=bot_message,
+        choices=FOLLOWUP_CHOICES,
+        show_input=True,
+        result=result,
+        scope_breadcrumb=_breadcrumb(session.scope_path),
+    )
+
+
 def _map_outcome(session: SessionState, outcome: QueryOutcome, leaf_label: str) -> ChatResponse:
-    # Every branch here keeps session.step at "ready" (we never touch it) -- a second
-    # question on the same session works without re-walking the funnel.
     if outcome.status == "OUT_OF_SCOPE":
-        return ChatResponse(
-            session_id=session.session_id,
-            bot_message=(
-                "Dazu habe ich keine Daten -- ich kann nur Fragen zu Ihren CRM-Daten im "
-                f"Bereich {leaf_label} beantworten."
-            ),
-            choices=[],
-            show_input=True,
-            scope_breadcrumb=_breadcrumb(session.scope_path),
+        return _with_followup(
+            session,
+            "Dazu habe ich keine Daten -- ich kann nur Fragen zu Ihren CRM-Daten im "
+            f"Bereich {leaf_label} beantworten.",
         )
 
     if outcome.status == "GAVE_UP":
-        return ChatResponse(
-            session_id=session.session_id,
-            bot_message="Ich konnte dazu keine gültige Abfrage erstellen. Bitte formulieren Sie die Frage anders.",
-            choices=[],
-            show_input=True,
-            scope_breadcrumb=_breadcrumb(session.scope_path),
+        return _with_followup(
+            session, "Ich konnte dazu keine gültige Abfrage erstellen. Bitte formulieren Sie die Frage anders."
         )
 
     # SUCCESS: a query that ran fine and found nothing is a distinct, honest outcome (#24)
     # from a query that couldn't be built at all -- never conflate the two in the copy.
     if not outcome.rows:
-        return ChatResponse(
-            session_id=session.session_id,
-            bot_message=(
-                f"Dazu habe ich im Bereich {leaf_label} keine Daten gefunden. Möglicherweise "
-                "gibt es dazu keine Einträge, oder die Frage passt nicht zu den vorhandenen Daten."
-            ),
-            choices=[],
-            show_input=True,
-            scope_breadcrumb=_breadcrumb(session.scope_path),
+        return _with_followup(
+            session,
+            f"Dazu habe ich im Bereich {leaf_label} keine Daten gefunden. Möglicherweise "
+            "gibt es dazu keine Einträge, oder die Frage passt nicht zu den vorhandenen Daten.",
         )
 
     doc_ref = TREES[session.scope_path[0]].doc_ref
@@ -303,13 +381,10 @@ def _map_outcome(session: SessionState, outcome: QueryOutcome, leaf_label: str) 
         sql=outcome.sql,
         sources=[SourceItem(table=table, doc_ref=doc_ref) for table in outcome.tables_used],
     )
-    return ChatResponse(
-        session_id=session.session_id,
-        bot_message=f"Hier ist Ihr Ergebnis ({len(outcome.rows)} Zeilen). Geprüfter Bereich: {leaf_label}.",
-        choices=[],
-        show_input=True,
+    return _with_followup(
+        session,
+        f"Hier ist Ihr Ergebnis ({len(outcome.rows)} Zeilen). Geprüfter Bereich: {leaf_label}.",
         result=result,
-        scope_breadcrumb=_breadcrumb(session.scope_path),
     )
 
 
@@ -318,6 +393,8 @@ _STEP_HANDLERS = {
     "scope": _handle_scope,
     "time": _handle_time,
     "ready": _handle_ready,
+    "followup": _handle_followup,
+    "time_offer": _handle_time_offer,
 }
 
 _STEP_PROMPTS = {
@@ -325,4 +402,6 @@ _STEP_PROMPTS = {
     "scope": _scope_prompt,
     "time": _time_prompt,
     "ready": _ready_prompt,
+    "followup": _followup_prompt,
+    "time_offer": _time_offer_prompt,
 }
