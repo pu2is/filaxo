@@ -2,10 +2,11 @@
 import { onMounted } from 'vue'
 
 import { useChatStore } from '@/features/chat/stores/chat.store'
-import type { ChoiceItem } from '@/features/chat/types'
+import type { BreadcrumbItem, ChoiceItem } from '@/features/chat/types'
 import ChoiceGroup from './ChoiceGroup.vue'
 import MessageHistory from './MessageHistory.vue'
 import QueryInput from './QueryInput.vue'
+import ScopeBreadcrumb from './ScopeBreadcrumb.vue'
 
 const chat = useChatStore()
 
@@ -18,7 +19,14 @@ onMounted(() => {
 
 function handleChoice(choice: ChoiceItem) {
   // Server-driven routing: each choice carries the action the backend expects back (#22).
+  // Tree-drill choices (select_scope) need no special handling here -- the backend
+  // already put the right action/id/label on the choice (#31).
   chat.sendAction(choice.action, choice.id, choice.label)
+}
+
+function handleTruncate(crumb: BreadcrumbItem) {
+  // #32: clicking a breadcrumb chip's × truncates back to before that level.
+  chat.sendAction('truncate_scope', crumb.key, `Zurück: ${crumb.label}`)
 }
 
 function handleSubmit(text: string) {
@@ -42,6 +50,9 @@ function handleSubmit(text: string) {
       </button>
     </header>
     <MessageHistory :history="chat.history" :is-loading="chat.isLoading" />
+    <div v-if="chat.activeBreadcrumb.length" class="shrink-0 border-t border-border px-4 py-2">
+      <ScopeBreadcrumb :crumbs="chat.activeBreadcrumb" :disabled="chat.isLoading" @remove="handleTruncate" />
+    </div>
     <div v-if="chat.activeChoices.length" class="shrink-0 border-t border-border p-4">
       <ChoiceGroup :choices="chat.activeChoices" :disabled="chat.isLoading" @select="handleChoice" />
     </div>

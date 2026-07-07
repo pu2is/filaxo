@@ -15,6 +15,12 @@ export const useChatStore = defineStore('chat', () => {
     return last?.kind === 'bot' ? last.response.choices : []
   })
 
+  // Same idea for the scope breadcrumb (#31/#32) -- server-truth path as of the latest turn.
+  const activeBreadcrumb = computed(() => {
+    const last = history.value[history.value.length - 1]
+    return last?.kind === 'bot' ? last.response.scope_breadcrumb : []
+  })
+
   async function sendAction(action: ChatAction, payload?: string, userReplyText?: string) {
     if (isLoading.value) return
     isLoading.value = true
@@ -42,5 +48,5 @@ export const useChatStore = defineStore('chat', () => {
     void sendAction('start')
   }
 
-  return { sessionId, history, isLoading, activeChoices, sendAction, restart }
+  return { sessionId, history, isLoading, activeChoices, activeBreadcrumb, sendAction, restart }
 })

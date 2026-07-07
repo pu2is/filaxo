@@ -16,12 +16,28 @@ export interface SuggestionItem {
 
 // 'proceed' (the BG3 scope add-on's skip action) was removed backend-side in #25 --
 // D5 moved cross-thema selection to MVP 2, so there's no add-on step to skip anymore.
-export type ChatAction = 'start' | 'select_domain' | 'confirm_domain' | 'select_time' | 'query'
+// #31 (D5 tree drilling): "select_scope" payload is the FULL dotted node path (e.g.
+// "LEAD.SCORING", matching a ChoiceItem.id from the scope step); "truncate_scope" payload
+// is just the single segment key to cut back to (e.g. "SCORING"), matching a
+// scope_breadcrumb entry's `key`.
+export type ChatAction =
+  | 'start'
+  | 'select_domain'
+  | 'select_scope'
+  | 'truncate_scope'
+  | 'confirm_domain'
+  | 'select_time'
+  | 'query'
 
 export interface ChatRequest {
   session_id?: string | null
   action: ChatAction
   payload?: string | null
+}
+
+export interface BreadcrumbItem {
+  key: string // single path segment -- this is truncate_scope's payload when its × is clicked
+  label: string // German label for that segment
 }
 
 export interface SourceItem {
@@ -49,6 +65,7 @@ export interface ChatResponse {
   suggestions: SuggestionItem[]
   show_input: boolean
   result: ResultPayload | null
+  scope_breadcrumb: BreadcrumbItem[] // server-truth scope-tree path walked so far (#31)
 }
 
 // --- Frontend-only view types below: NOT part of the backend contract. ---
