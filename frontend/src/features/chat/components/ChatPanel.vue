@@ -4,6 +4,7 @@ import { onMounted } from 'vue'
 import { useChatStore } from '@/features/chat/stores/chat.store'
 import type { BreadcrumbItem, ChoiceItem } from '@/features/chat/types'
 import ChoiceGroup from './ChoiceGroup.vue'
+import DateRangePicker from './DateRangePicker.vue'
 import MessageHistory from './MessageHistory.vue'
 import QueryInput from './QueryInput.vue'
 import ScopeBreadcrumb from './ScopeBreadcrumb.vue'
@@ -34,6 +35,10 @@ function handleSubmit(text: string) {
   // "query" action -- payload and the echoed user-reply text are the same string.
   chat.sendAction('query', text, text)
 }
+
+function handleTimeRangeSubmit(dateFrom: string, dateTo: string) {
+  chat.setTimeRange(dateFrom, dateTo)
+}
 </script>
 
 <template>
@@ -53,11 +58,18 @@ function handleSubmit(text: string) {
     <div v-if="chat.activeBreadcrumb.length" class="shrink-0 border-t border-border px-4 py-2">
       <ScopeBreadcrumb :crumbs="chat.activeBreadcrumb" :disabled="chat.isLoading" @remove="handleTruncate" />
     </div>
-    <div v-if="chat.activeChoices.length" class="shrink-0 border-t border-border p-4">
-      <ChoiceGroup :choices="chat.activeChoices" :disabled="chat.isLoading" @select="handleChoice" />
+    <div v-if="chat.activeAwaitingTimeRange" class="shrink-0 border-t border-border p-4">
+      <!-- D6/#37: date-range picker takes over the whole input area for this turn --
+           there's nothing to choose or type freely at the time step. -->
+      <DateRangePicker :disabled="chat.isLoading" @submit="handleTimeRangeSubmit" />
     </div>
-    <div class="shrink-0 border-t border-border p-4">
-      <QueryInput :disabled="chat.isLoading" @submit="handleSubmit" />
-    </div>
+    <template v-else>
+      <div v-if="chat.activeChoices.length" class="shrink-0 border-t border-border p-4">
+        <ChoiceGroup :choices="chat.activeChoices" :disabled="chat.isLoading" @select="handleChoice" />
+      </div>
+      <div class="shrink-0 border-t border-border p-4">
+        <QueryInput :disabled="chat.isLoading" @submit="handleSubmit" />
+      </div>
+    </template>
   </div>
 </template>

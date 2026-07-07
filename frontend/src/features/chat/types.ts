@@ -37,6 +37,9 @@ export interface ChatRequest {
   session_id?: string | null
   action: ChatAction
   payload?: string | null
+  // set_time_range only (D6, #34/#37): ISO YYYY-MM-DD, as typed/picked by the user.
+  date_from?: string | null
+  date_to?: string | null
 }
 
 export interface BreadcrumbItem {
@@ -70,6 +73,8 @@ export interface ChatResponse {
   show_input: boolean
   result: ResultPayload | null
   scope_breadcrumb: BreadcrumbItem[] // server-truth scope-tree path walked so far (#31)
+  // True only at the time step (D6, #34): render a date-range picker instead of choices.
+  awaiting_time_range: boolean
 }
 
 // --- Frontend-only view types below: NOT part of the backend contract. ---
