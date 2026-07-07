@@ -28,6 +28,13 @@ export const useChatStore = defineStore('chat', () => {
     return last?.kind === 'bot' ? last.response.awaiting_time_range : false
   })
 
+  // D8/#38: the ready step's Frage-Empfehlung candidates (#36's get_suggestions), same
+  // "only the newest bot turn" pattern as activeChoices/activeBreadcrumb above.
+  const activeSuggestions = computed(() => {
+    const last = history.value[history.value.length - 1]
+    return last?.kind === 'bot' ? last.response.suggestions : []
+  })
+
   // Shared by sendAction/setTimeRange below: send the request, land the bot turn, and
   // manage isLoading -- the two callers only differ in what they push as the user's own
   // reply bubble before calling this.
@@ -78,6 +85,7 @@ export const useChatStore = defineStore('chat', () => {
     activeChoices,
     activeBreadcrumb,
     activeAwaitingTimeRange,
+    activeSuggestions,
     sendAction,
     setTimeRange,
     restart,

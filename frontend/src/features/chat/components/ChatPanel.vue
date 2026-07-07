@@ -2,12 +2,13 @@
 import { onMounted } from 'vue'
 
 import { useChatStore } from '@/features/chat/stores/chat.store'
-import type { BreadcrumbItem, ChoiceItem } from '@/features/chat/types'
+import type { BreadcrumbItem, ChoiceItem, SuggestionItem } from '@/features/chat/types'
 import ChoiceGroup from './ChoiceGroup.vue'
 import DateRangePicker from './DateRangePicker.vue'
 import MessageHistory from './MessageHistory.vue'
 import QueryInput from './QueryInput.vue'
 import ScopeBreadcrumb from './ScopeBreadcrumb.vue'
+import SuggestionPanel from './SuggestionPanel.vue'
 
 const chat = useChatStore()
 
@@ -39,6 +40,12 @@ function handleSubmit(text: string) {
 function handleTimeRangeSubmit(dateFrom: string, dateTo: string) {
   chat.setTimeRange(dateFrom, dateTo)
 }
+
+function handleSuggestion(suggestion: SuggestionItem) {
+  // D8/#38: a clicked suggestion is a "query" action, same as typing it -- zero new
+  // backend logic needed for "click vs. type".
+  chat.sendAction('query', suggestion.label, suggestion.label)
+}
 </script>
 
 <template>
@@ -66,6 +73,9 @@ function handleTimeRangeSubmit(dateFrom: string, dateTo: string) {
     <template v-else>
       <div v-if="chat.activeChoices.length" class="shrink-0 border-t border-border p-4">
         <ChoiceGroup :choices="chat.activeChoices" :disabled="chat.isLoading" @select="handleChoice" />
+      </div>
+      <div v-if="chat.activeSuggestions.length" class="shrink-0 border-t border-border p-4">
+        <SuggestionPanel :suggestions="chat.activeSuggestions" :disabled="chat.isLoading" @select="handleSuggestion" />
       </div>
       <div class="shrink-0 border-t border-border p-4">
         <QueryInput :disabled="chat.isLoading" @submit="handleSubmit" />
