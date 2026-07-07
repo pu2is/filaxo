@@ -19,10 +19,11 @@ class SessionState:
     # "greeting". Cross-thema combination is still MVP 2 -- this path only ever has one
     # thema as its root, never more than one tree walked at a time.
     scope_path: list[str] = field(default_factory=list)
-    # Time-range key (one of service.TIME_RANGE_LABELS), set at the "time" step. Stays
-    # None if the leaf reached has no date facet (#31 skips the time step entirely then)
-    # or before the step is reached at all.
-    time_range: str | None = None
+    # User-entered ISO date range (D6, #34), set at the "time" step. Both stay None if
+    # the leaf reached has no date facet (#31 skips the time step entirely then) or
+    # before the step is reached at all.
+    date_from: str | None = None
+    date_to: str | None = None
 
 
 sessions: dict[str, SessionState] = {}

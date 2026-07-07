@@ -24,8 +24,16 @@ def clean_sessions():
     sessions.clear()
 
 
-def send(session_id: str | None, action: str, payload: str | None = None) -> ChatResponse:
-    return handle_chat(ChatRequest(session_id=session_id, action=action, payload=payload))
+def send(
+    session_id: str | None,
+    action: str,
+    payload: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> ChatResponse:
+    return handle_chat(
+        ChatRequest(session_id=session_id, action=action, payload=payload, date_from=date_from, date_to=date_to)
+    )
 
 
 def start_session() -> ChatResponse:
@@ -42,9 +50,14 @@ def walk_to_leaf(thema: str, leaf_id: str) -> str:
     return sid
 
 
-def walk_to_ready(thema: str = "LEAD", leaf_id: str = "LEAD.SCORING", time_key: str = "THIS_MONTH") -> str:
+def walk_to_ready(
+    thema: str = "LEAD",
+    leaf_id: str = "LEAD.SCORING",
+    date_from: str = "2025-10-01",
+    date_to: str = "2025-12-31",
+) -> str:
     sid = walk_to_leaf(thema, leaf_id)
-    send(sid, "select_time", time_key)
+    send(sid, "set_time_range", date_from=date_from, date_to=date_to)
     return sid
 
 
@@ -80,13 +93,16 @@ def test_full_walk_to_ready_for_every_leaf(thema: str, leaf_id: str, leaf_label:
     assert sessions[sid].step == "time"
     assert sessions[sid].scope_path == leaf_id.split(".")
     assert "Für welchen Zeitraum" in time_prompt.bot_message
-    assert [c.id for c in time_prompt.choices] == ["TODAY", "THIS_WEEK", "THIS_MONTH", "THIS_YEAR", "ALL"]
+    assert time_prompt.choices == []
+    assert time_prompt.awaiting_time_range is True
     assert [b.key for b in time_prompt.scope_breadcrumb] == [thema, leaf_id.split(".")[-1]]
     assert [b.label for b in time_prompt.scope_breadcrumb] == [TREES[thema].label, leaf_label]
 
-    ready = send(sid, "select_time", "THIS_MONTH")
+    ready = send(sid, "set_time_range", date_from="2025-10-01", date_to="2025-12-31")
     assert sessions[sid].step == "ready"
-    assert sessions[sid].time_range == "THIS_MONTH"
+    assert sessions[sid].date_from == "2025-10-01"
+    assert sessions[sid].date_to == "2025-12-31"
+    assert "Zeitraum: 2025-10-01 bis 2025-12-31" in ready.bot_message
     assert "Stellen Sie jetzt Ihre Frage" in ready.bot_message
     assert ready.choices == []
 
@@ -109,7 +125,8 @@ def test_facet_skip_leaf_goes_straight_to_ready(monkeypatch):
 
     ready = send(sid, "select_scope", "NOFACET.OVERVIEW")
     assert sessions[sid].step == "ready"
-    assert sessions[sid].time_range is None
+    assert sessions[sid].date_from is None
+    assert sessions[sid].date_to is None
     assert "Stellen Sie jetzt Ihre Frage" in ready.bot_message
     assert [b.key for b in ready.scope_breadcrumb] == ["NOFACET", "OVERVIEW"]
 
@@ -118,27 +135,29 @@ def test_facet_skip_leaf_goes_straight_to_ready(monkeypatch):
 
 
 def test_truncate_at_leaf_returns_to_scope_step_with_shrunk_breadcrumb():
-    sid = walk_to_ready("LEAD", "LEAD.SCORING", "THIS_MONTH")
+    sid = walk_to_ready("LEAD", "LEAD.SCORING")
 
     response = send(sid, "truncate_scope", "SCORING")
 
     state = sessions[sid]
     assert state.step == "scope"
     assert state.scope_path == ["LEAD"]
-    assert state.time_range is None  # reset, per the ticket
+    assert state.date_from is None  # reset, per the ticket
+    assert state.date_to is None
     assert [b.key for b in response.scope_breadcrumb] == ["LEAD"]
     assert {c.id for c in response.choices} == {leaf.id for leaf in TREES["LEAD"].leaves}
 
 
 def test_truncate_at_thema_returns_to_greeting():
-    sid = walk_to_ready("LEAD", "LEAD.SCORING", "THIS_MONTH")
+    sid = walk_to_ready("LEAD", "LEAD.SCORING")
 
     response = send(sid, "truncate_scope", "LEAD")
 
     state = sessions[sid]
     assert state.step == "greeting"
     assert state.scope_path == []
-    assert state.time_range is None
+    assert state.date_from is None
+    assert state.date_to is None
     assert "Was möchten Sie heute analysieren?" in response.bot_message
     assert response.scope_breadcrumb == []
 
@@ -155,14 +174,15 @@ def test_truncate_works_from_the_time_step_too():
 
 
 def test_truncate_invalid_node_key_reprompts_current_step_untouched():
-    sid = walk_to_ready("LEAD", "LEAD.SCORING", "THIS_MONTH")
+    sid = walk_to_ready("LEAD", "LEAD.SCORING")
 
     response = send(sid, "truncate_scope", "NOT_IN_PATH")
 
     state = sessions[sid]
     assert state.step == "ready"  # untouched
     assert state.scope_path == ["LEAD", "SCORING"]
-    assert state.time_range == "THIS_MONTH"
+    assert state.date_from == "2025-10-01"
+    assert state.date_to == "2025-12-31"
     assert "Stellen Sie jetzt Ihre Frage" in response.bot_message
 
 
@@ -185,10 +205,10 @@ def test_truncate_at_greeting_is_a_noop_reprompt():
 
 def test_wrong_action_for_step_reprompts_greeting():
     sid = start_session().session_id
-    response = send(sid, "select_time", "THIS_MONTH")
+    response = send(sid, "set_time_range", date_from="2025-10-01", date_to="2025-12-31")
     assert "Was möchten Sie heute analysieren?" in response.bot_message
     assert sessions[sid].step == "greeting"
-    assert sessions[sid].time_range is None
+    assert sessions[sid].date_from is None
 
 
 def test_unknown_domain_payload_reprompts_greeting():
@@ -216,12 +236,22 @@ def test_select_scope_at_greeting_reprompts_greeting():
     assert sessions[sid].step == "greeting"
 
 
-def test_unknown_time_payload_reprompts_time_step():
+@pytest.mark.parametrize(
+    "date_from,date_to",
+    [
+        ("not-a-date", "2025-12-31"),  # malformed
+        ("2025-10-01", None),  # missing field
+        ("2025-12-31", "2025-10-01"),  # reversed
+    ],
+)
+def test_invalid_time_range_reprompts_time_step_with_invalid_message(date_from, date_to):
     sid = walk_to_leaf("LEAD", "LEAD.SCORING")
-    response = send(sid, "select_time", "FOO")
-    assert "Für welchen Zeitraum" in response.bot_message
+    response = send(sid, "set_time_range", date_from=date_from, date_to=date_to)
+    assert "ungültig" in response.bot_message
+    assert response.awaiting_time_range is True
     assert sessions[sid].step == "time"
-    assert sessions[sid].time_range is None
+    assert sessions[sid].date_from is None
+    assert sessions[sid].date_to is None
 
 
 def test_select_domain_again_at_scope_step_reprompts_scope():
@@ -236,7 +266,7 @@ def test_select_domain_again_at_scope_step_reprompts_scope():
 
 
 def test_unknown_session_id_restarts_funnel():
-    response = send("no-such-session", "select_time", "THIS_MONTH")
+    response = send("no-such-session", "set_time_range", date_from="2025-10-01", date_to="2025-12-31")
     assert "Was möchten Sie heute analysieren?" in response.bot_message
     # The caller-supplied id is honored as the new session's key (see session_store).
     assert response.session_id == "no-such-session"
@@ -250,7 +280,8 @@ def test_restart_mid_funnel_drops_accumulated_scope():
     state = sessions[sid]
     assert state.step == "greeting"
     assert state.scope_path == []
-    assert state.time_range is None
+    assert state.date_from is None
+    assert state.date_to is None
 
 
 def test_query_without_payload_at_ready_reprompts():

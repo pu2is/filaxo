@@ -1,43 +1,42 @@
-"""Unit tests for the funnel time-key -> TimeRange resolver (#25)."""
+"""Unit tests for the direct date-entry parser (D6, #34)."""
 
-from datetime import date
-
-from modules.query.time_range import resolve_time_range
+from modules.query.time_range import parse_time_range
 
 
-def test_all_returns_none():
-    assert resolve_time_range("ALL") is None
+def test_valid_range_is_echoed_back():
+    tr = parse_time_range("2025-10-01", "2025-12-31")
+    assert tr.date_from == "2025-10-01"
+    assert tr.date_to == "2025-12-31"
 
 
-def test_unknown_key_returns_none():
-    assert resolve_time_range("NOT_A_KEY") is None
+def test_single_day_range_is_valid():
+    tr = parse_time_range("2025-10-01", "2025-10-01")
+    assert tr.date_from == tr.date_to == "2025-10-01"
 
 
-def test_today():
-    tr = resolve_time_range("TODAY", today=date(2026, 7, 7))
-    assert tr.key == "TODAY"
-    assert tr.date_from == tr.date_to == "2026-07-07"
+def test_missing_date_from_returns_none():
+    assert parse_time_range(None, "2025-12-31") is None
 
 
-def test_this_week_is_monday_through_sunday():
-    tr = resolve_time_range("THIS_WEEK", today=date(2026, 7, 7))  # a Tuesday
-    assert tr.date_from == "2026-07-06"
-    assert tr.date_to == "2026-07-12"
+def test_missing_date_to_returns_none():
+    assert parse_time_range("2025-10-01", None) is None
 
 
-def test_this_month_is_full_calendar_bounds():
-    tr = resolve_time_range("THIS_MONTH", today=date(2026, 7, 7))
-    assert tr.date_from == "2026-07-01"
-    assert tr.date_to == "2026-07-31"
+def test_both_missing_returns_none():
+    assert parse_time_range(None, None) is None
 
 
-def test_this_month_handles_leap_february():
-    tr = resolve_time_range("THIS_MONTH", today=date(2028, 2, 15))
-    assert tr.date_from == "2028-02-01"
-    assert tr.date_to == "2028-02-29"
+def test_unparseable_date_from_returns_none():
+    assert parse_time_range("not-a-date", "2025-12-31") is None
 
 
-def test_this_year_is_full_calendar_bounds():
-    tr = resolve_time_range("THIS_YEAR", today=date(2026, 7, 7))
-    assert tr.date_from == "2026-01-01"
-    assert tr.date_to == "2026-12-31"
+def test_unparseable_date_to_returns_none():
+    assert parse_time_range("2025-10-01", "not-a-date") is None
+
+
+def test_wrong_format_is_rejected_even_if_almost_iso():
+    assert parse_time_range("01-10-2025", "2025-12-31") is None
+
+
+def test_date_from_after_date_to_returns_none():
+    assert parse_time_range("2025-12-31", "2025-10-01") is None

@@ -32,17 +32,10 @@ from modules.chat.schemas import (
 )
 from modules.chat.session_store import SessionState, get_or_create, sessions
 from modules.query.engine import QueryOutcome, run_query
-from modules.query.time_range import resolve_time_range
+from modules.query.schemas import TimeRange
+from modules.query.time_range import parse_time_range
 from modules.schema.leaf_question_bank import get_few_shots
 from modules.schema.scope_tree import TREES, ScopeTreeError, children, is_leaf, resolve
-
-TIME_RANGE_LABELS = {
-    "TODAY": "Heute",
-    "THIS_WEEK": "Diese Woche",
-    "THIS_MONTH": "Dieser Monat",
-    "THIS_YEAR": "Dieses Jahr",
-    "ALL": "Alle",
-}
 
 
 def handle_chat(request: ChatRequest) -> ChatResponse:
@@ -98,10 +91,16 @@ def _handle_scope(session: SessionState, request: ChatRequest) -> ChatResponse:
 
 
 def _handle_time(session: SessionState, request: ChatRequest) -> ChatResponse:
-    if request.action == "select_time" and request.payload in TIME_RANGE_LABELS:
-        session.time_range = request.payload
-        session.step = "ready"
-        return _ready_prompt(session)
+    if request.action == "set_time_range":
+        time_range = parse_time_range(request.date_from, request.date_to)
+        if time_range is not None:
+            session.date_from = time_range.date_from
+            session.date_to = time_range.date_to
+            session.step = "ready"
+            return _ready_prompt(session)
+        # Malformed date, missing field, or date_from > date_to (#34): guard-rail
+        # re-prompt with the invalid-input variant, never a 500.
+        return _time_prompt(session, invalid=True)
     return _reprompt(session)
 
 
@@ -117,7 +116,8 @@ def _handle_truncate(session: SessionState, request: ChatRequest) -> ChatRespons
 
     cut_at = session.scope_path.index(request.payload)
     session.scope_path = session.scope_path[:cut_at]
-    session.time_range = None
+    session.date_from = None
+    session.date_to = None
     if not session.scope_path:
         return _greet(session)  # cutting the thema itself returns to greeting
     return _advance_after_scope_change(session)
@@ -131,7 +131,8 @@ def _greet(session: SessionState) -> ChatResponse:
     # session can never leak a stale scope/time into the new run.
     session.step = "greeting"
     session.scope_path = []
-    session.time_range = None
+    session.date_from = None
+    session.date_to = None
     return _greeting_prompt(session)
 
 
@@ -191,23 +192,27 @@ def _scope_prompt(session: SessionState) -> ChatResponse:
     )
 
 
-def _time_prompt(session: SessionState) -> ChatResponse:
+def _time_prompt(session: SessionState, invalid: bool = False) -> ChatResponse:
+    # No choices (D6, #34): the frontend renders a date-range picker off
+    # awaiting_time_range instead of buttons -- picker UI itself is #37.
+    message = (
+        "Das eingegebene Datum war ungültig. Bitte wählen Sie Start- und Enddatum erneut."
+        if invalid
+        else "Für welchen Zeitraum möchten Sie analysieren?"
+    )
     return ChatResponse(
         session_id=session.session_id,
-        bot_message="Für welchen Zeitraum möchten Sie analysieren?",
-        choices=[
-            ChoiceItem(id=key, label=label, action="select_time")
-            for key, label in TIME_RANGE_LABELS.items()
-        ],
+        bot_message=message,
+        choices=[],
         show_input=True,
+        awaiting_time_range=True,
         scope_breadcrumb=_breadcrumb(session.scope_path),
     )
 
 
 def _ready_prompt(session: SessionState) -> ChatResponse:
-    if session.time_range:
-        time_label = TIME_RANGE_LABELS[session.time_range]
-        message = f"Zeitraum: {time_label}. Stellen Sie jetzt Ihre Frage."
+    if session.date_from and session.date_to:
+        message = f"Zeitraum: {session.date_from} bis {session.date_to}. Stellen Sie jetzt Ihre Frage."
     else:
         # Facet-skip leaf (#31): no time step was ever offered, so there's no range to name.
         message = "Stellen Sie jetzt Ihre Frage."
@@ -242,7 +247,11 @@ def _answer_question(session: SessionState, question: str) -> ChatResponse:
     leaf = resolve(session.scope_path)
     leaf_label = leaf["label"]
     tables = leaf["tables"]
-    time_range = resolve_time_range(session.time_range) if session.time_range else None
+    time_range = (
+        TimeRange(date_from=session.date_from, date_to=session.date_to)
+        if session.date_from and session.date_to
+        else None
+    )
     few_shots = get_few_shots(session.scope_path)
 
     outcome = run_query(question, tables, time_range=time_range, few_shots=few_shots)

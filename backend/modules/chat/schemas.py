@@ -19,7 +19,9 @@ from pydantic import BaseModel
 # without guessing what came before. "truncate_scope" payload is just the single segment
 # key to cut back to (e.g. "SCORING"), matching a scope_breadcrumb entry's `key`. Both
 # forms were frozen in mvp-request.md's API contract before this ticket implemented them.
-ChatAction = Literal["start", "select_domain", "select_scope", "truncate_scope", "confirm_domain", "select_time", "query"]
+# "set_time_range" (D6, #34) replaces "select_time": the user enters date_from/date_to
+# directly instead of picking a relative-time preset -- see ChatRequest below.
+ChatAction = Literal["start", "select_domain", "select_scope", "truncate_scope", "confirm_domain", "set_time_range", "query"]
 
 
 class ChoiceItem(BaseModel):
@@ -42,6 +44,10 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     action: ChatAction
     payload: str | None = None
+    # set_time_range only (D6, #34): ISO YYYY-MM-DD, user-entered -- validated by
+    # modules.query.time_range.parse_time_range, never parsed/trusted here.
+    date_from: str | None = None
+    date_to: str | None = None
 
 
 class SourceItem(BaseModel):
@@ -72,3 +78,6 @@ class ChatResponse(BaseModel):
     # Empty at "greeting" (nothing picked yet). The frontend renders this directly rather
     # than reconstructing it client-side, and sends a crumb's `key` back as truncate_scope's payload.
     scope_breadcrumb: list[BreadcrumbItem] = []
+    # True only at the time step (D6, #34): signals the frontend to render a date-range
+    # picker instead of choice buttons. The picker UI itself is #37, out of scope here.
+    awaiting_time_range: bool = False

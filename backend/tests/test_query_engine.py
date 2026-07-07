@@ -54,7 +54,7 @@ def stub_execute(monkeypatch):
 
 def test_time_range_is_forwarded_to_provider_as_iso_dates():
     provider = FakeProvider()
-    time_range = TimeRange(key="THIS_YEAR", date_from="2026-01-01", date_to="2026-12-31")
+    time_range = TimeRange(date_from="2026-01-01", date_to="2026-12-31")
 
     run_query("Wie viele Leads gibt es?", TABLES, provider=provider, time_range=time_range)
 

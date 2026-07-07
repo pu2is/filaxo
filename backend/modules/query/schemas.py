@@ -6,6 +6,5 @@ from dataclasses import dataclass
 
 @dataclass
 class TimeRange:
-    key: str  # funnel choice, e.g. "THIS_YEAR" -- echoed through, not parsed here
-    date_from: str  # ISO date (YYYY-MM-DD), computed in Python -- never left to the LLM
+    date_from: str  # ISO date (YYYY-MM-DD), user-entered and validated -- never left to the LLM
     date_to: str

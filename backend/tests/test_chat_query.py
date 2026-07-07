@@ -22,15 +22,28 @@ def clean_sessions():
     sessions.clear()
 
 
-def send(session_id: str | None, action: str, payload: str | None = None) -> ChatResponse:
-    return handle_chat(ChatRequest(session_id=session_id, action=action, payload=payload))
+def send(
+    session_id: str | None,
+    action: str,
+    payload: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> ChatResponse:
+    return handle_chat(
+        ChatRequest(session_id=session_id, action=action, payload=payload, date_from=date_from, date_to=date_to)
+    )
 
 
-def walk_to_ready(thema: str = "LEAD", leaf_id: str = "LEAD.SCORING", time_key: str = "THIS_MONTH") -> str:
+def walk_to_ready(
+    thema: str = "LEAD",
+    leaf_id: str = "LEAD.SCORING",
+    date_from: str = "2025-10-01",
+    date_to: str = "2025-12-31",
+) -> str:
     sid = send(None, "start").session_id
     send(sid, "select_domain", thema)
     send(sid, "select_scope", leaf_id)
-    send(sid, "select_time", time_key)
+    send(sid, "set_time_range", date_from=date_from, date_to=date_to)
     return sid
 
 
@@ -109,12 +122,13 @@ def test_engine_receives_leaf_tables_few_shots_and_resolved_time_range(monkeypat
 
     monkeypatch.setattr(service, "run_query", fake_run_query)
 
-    sid = walk_to_ready(thema="CUSTOMER", leaf_id="CUSTOMER.CONTACT", time_key="THIS_YEAR")
+    sid = walk_to_ready(thema="CUSTOMER", leaf_id="CUSTOMER.CONTACT", date_from="2025-01-01", date_to="2025-12-31")
     send(sid, "query", "Wie viele Kunden gibt es?")
 
     assert captured["question"] == "Wie viele Kunden gibt es?"
     assert captured["tables"] == ["cobra.BaAddress", "cobra.BaAddInfo"]
-    assert captured["time_range"].key == "THIS_YEAR"
+    assert captured["time_range"].date_from == "2025-01-01"
+    assert captured["time_range"].date_to == "2025-12-31"
     # #31: leaf-scoped few-shots (#30's loader) reach the engine, not an empty list.
     assert captured["few_shots"] != []
     assert all("-- Frage:" in shot for shot in captured["few_shots"])
