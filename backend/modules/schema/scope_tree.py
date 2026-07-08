@@ -1,25 +1,32 @@
-"""LEAD + CUSTOMER scope trees (#27): thema -> leaf, each leaf a fixed table set +
-JOIN snippet + time facet. This is the D5 scope tree in its Wave-1-covering form --
-thema -> leaf, i.e. depth 2 of the max-3-level design (no sub-sub-thema needed yet
-for these two themas); consumed by the future tree-walking funnel loader (#30).
+"""LEAD + CUSTOMER + NEWCAR scope trees (#27, #39): thema -> leaf, each leaf a fixed
+table set + JOIN snippet + time facet. This is the D5 scope tree in its multi-theme
+form -- thema -> leaf, i.e. depth 2 of the max-3-level design (no sub-sub-thema needed
+yet for any of these themas); consumed by the tree-walking funnel (chat/service.py, #31).
 
 Every leaf's table set and JOIN snippet was verified against the live DB
-(localhost,14330) on 2026-07-07, not just against the docs/01-*-erDiagram.md text --
+(localhost,14330) on 2026-07-07, not just against the docs/0*-*-erDiagram.md text --
 those diagrams have already been found to drift from the real schema (see
-docs/scope-trees.md for the full ~91-table disposition log and the known-gaps list
-this module's shape is built from). Two load-bearing corrections from that pass:
+docs/scope-trees.md for the full disposition logs and known-gaps lists this module's
+shape is built from). Load-bearing corrections from those passes:
 
 - Only the newer Crm* (CRM module) tables have real DB-level FK constraints. The
-  legacy Ba*/Cdi* (dealer-management-system) tables have ZERO declared FK
-  constraints anywhere in `cobra` -- their relationships are enforced at the
-  application layer only, never the DB. Every join_snippet below that crosses a
-  Ba*/Cdi* boundary is therefore verified by matching row COUNTS, not by a
-  constraint the DB itself would enforce.
+  legacy Ba*/Cdi*/Cdn* (dealer-management-system) tables have ZERO declared FK
+  constraints anywhere in `cobra` -- confirmed for Cdn* via sys.foreign_keys across
+  all 77 candidate 02-newcar-sales tables, same finding as Ba*/Cdi* (#27). Their
+  relationships are enforced at the application layer only, never the DB. Every
+  join_snippet below that crosses one of these table families is therefore verified
+  by matching row COUNTS, not by a constraint the DB itself would enforce.
 - CdiKundenFzg.KundenId (the doc's flagship "which customer owns which car"
   bridge) is 100% NULL across all 19,563 rows in this sample, and
   CdmKundeEmail.KUNDE_ID uses a completely different ID format than
   BaAddress.AddressId (0/168 rows match) -- both are excluded from the CUSTOMER
   tree entirely rather than offered as a leaf that would silently return nothing.
+- The 02-newcar-sales doc (#39) has more column-name drift than #27 found on 01-*:
+  several columns its own flagship example queries depend on --
+  `CdnFzgVerkauf.VerkaufDatum`, `CdnAuftragK.Termin`/`.LieferDatum`,
+  `CdnBuchKtoSt.Saldo`, `CdnVkRech.Status` -- do not exist on the live tables at all.
+  See each NEWCAR leaf's notes below and docs/scope-trees.md's Known Gaps for the
+  live equivalents used instead.
 """
 
 from dataclasses import dataclass
@@ -199,7 +206,168 @@ LEFT JOIN cobra.BaAddInfo i ON i.InfoId = a.AddressId""",
 )
 
 
-TREES: dict[str, ScopeTree] = {"LEAD": LEAD_TREE, "CUSTOMER": CUSTOMER_TREE}
+NEWCAR_TREE = ScopeTree(
+    thema="NEWCAR",
+    label="Neuwagen",
+    doc_ref="docs/02-newcar-sales-erDiagram.md",
+    leaves=[
+        ScopeLeaf(
+            id="NEWCAR.OVERVIEW",
+            label="Überblick",
+            tables=["cobra.CdnAuftragK"],
+            join_snippet=None,
+            date_facet="CdnAuftragK.AuftragsDatum",
+            notes=(
+                "Whole-thema catch-all leaf. #39: no Cdn* table anywhere in `cobra` has a "
+                "declared FK constraint (confirmed via sys.foreign_keys -- same situation as "
+                "Ba*/Cdi*, zero results DB-wide across all 77 candidate tables), so every "
+                "relationship in this tree is verified by live row-count join match rate, "
+                "not a schema-enforced constraint."
+            ),
+        ),
+        ScopeLeaf(
+            id="NEWCAR.ORDER",
+            label="Auftragsabwicklung",
+            tables=[
+                "cobra.CdnAuftragK",
+                "cobra.CdnAuftragsPos",
+                "cobra.CdnAuftragKSplitt",
+                "cobra.CdnAuftragsSerAus",
+                "cobra.CdnAuftragSperre",
+                "cobra.CdnAuftragsSteuer",
+            ],
+            join_snippet="""\
+cobra.CdnAuftragK a
+LEFT JOIN cobra.CdnAuftragsPos p ON p.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdnAuftragKSplitt s ON s.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdnAuftragsSerAus sa ON sa.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdnAuftragSperre sp ON sp.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdnAuftragsSteuer st ON st.AUFTRAGKSPLITT_ID = s.ID""",
+            date_facet="CdnAuftragK.AuftragsDatum",
+            notes=(
+                "#39: the doc's ER diagram names the child FK column `AuftragId` on every one "
+                "of these tables -- the live column is `AUFTRAGK_ID` (all-caps, underscored), "
+                "and it references `CdnAuftragK.ID`, NOT `.CID` despite `CID` being the column "
+                "every ER block marks `PK`. Verified live: AUFTRAGK_ID -> ID matches 100% on "
+                "CdnAuftragsPos/CdnAuftragKSplitt/CdnAuftragSperre, 96.5% on CdnAuftragsSerAus "
+                "(109985/114016) -- matching against `.CID` instead returns 0% on all four. "
+                "CdnAuftragsSteuer joins one level down, to CdnAuftragKSplitt.ID (100% match), "
+                "not directly to CdnAuftragK. Also: the doc's own flagship 'delivery date "
+                "slippage' problem (comparing `CdnAuftragK.Termin` to `CdnFzgVerkauf."
+                "VerkaufDatum`) cites two columns that do not exist on the live tables at all "
+                "-- see NEWCAR.DELIVERY's notes and docs/scope-trees.md Known Gaps."
+            ),
+        ),
+        ScopeLeaf(
+            id="NEWCAR.DELIVERY",
+            label="Fahrzeugauslieferung & Verkauf",
+            tables=[
+                "cobra.CdnFzgVerkauf",
+                "cobra.CdnVkRech",
+                "cobra.CdnVkRechP",
+                "cobra.CdnVkPreis",
+                "cobra.CdnFzgReservierung",
+                "cobra.CdnInzahlg",
+                "cobra.CdnPraeZusatz",
+                "cobra.CdnLagerplatzHist",
+                "cobra.CdnFzgUmbuchung",
+                "cobra.CdnVerkaeufer",
+            ],
+            join_snippet="""\
+cobra.CdnFzgVerkauf v
+LEFT JOIN cobra.CdnVkRech r ON r.FzgVerkaufId = v.ID
+LEFT JOIN cobra.CdnVkRechP rp ON rp.FZGVERKAUF_ID = v.ID
+LEFT JOIN cobra.CdnVkPreis vp ON vp.FzgVerkaufId = v.ID
+LEFT JOIN cobra.CdnFzgReservierung res ON res.FzgVerkaufId = v.ID
+LEFT JOIN cobra.CdnInzahlg iz ON iz.FzgVerkaufid = v.ID
+LEFT JOIN cobra.CdnPraeZusatz pz ON pz.FzgVerkaufId = v.ID
+LEFT JOIN cobra.CdnLagerplatzHist lh ON lh.FZGVERKAUF_ID = v.ID
+LEFT JOIN cobra.CdnFzgUmbuchung um ON um.FzgVerkaufId = v.ID
+LEFT JOIN cobra.CdnVerkaeufer va ON va.ID = v.Verkaeufer1Id""",
+            date_facet="CdnFzgVerkauf.RechDatum",
+            notes=(
+                "#39: `CdnFzgVerkauf.VerkaufDatum` and `CdnAuftragK.Termin`/`.LieferDatum` -- "
+                "the exact columns the doc's own flagship queries and 'delivery date slippage' "
+                "problem statement are built on -- do not exist on the live tables (confirmed "
+                "via INFORMATION_SCHEMA.COLUMNS, not just a failed query). `AuslieferDat` "
+                "(delivery date, 9525/15730 rows populated) is the closest live equivalent but "
+                "only ~60% covered; `RechDatum` (invoice date, 15110/15730, ~96%) is used as "
+                "this leaf's date_facet instead for better coverage -- invoicing happens "
+                "essentially alongside delivery in this pipeline (发票→交车 per the doc's own "
+                "narrative), so it's a reasonable proxy, but a 'delivery date' answer should "
+                "say invoice date, not literally claim it's the handover date. `CdnVkRech` "
+                "also lacks the doc's claimed `Status`/`Bruttobetrag`/`KundenId` columns "
+                "entirely (real columns: `BetragNetto`/`BetragSteuerFrei`/`BetragMwst`, no "
+                "gross total, no customer link) -- the doc's 'unbilled orders' example query "
+                "(`WHERE r.Status != 'STORNO'`) cannot run as written. `CdnInzahlg.FzgVerkaufid` "
+                "(inconsistent casing, verified case-insensitive) -> CdnFzgVerkauf.ID is 100% "
+                "verified but only 3 rows exist -- see leaf_question_bank.yaml's known-gap "
+                "note, kept per check_crm.md's own callout that this table is underused. "
+                "`CdnVerkaeufer.ID` (not `.MitarbeiterId`/`.VerkaeuferNr`) is what "
+                "`CdnFzgVerkauf.Verkaeufer1Id` actually resolves against (13627/13637, 99.9%); "
+                "`.SuchBegriff` holds the advisor's human name ('Lastname, Firstname'), the "
+                "only readable-name field on that table."
+            ),
+        ),
+        ScopeLeaf(
+            id="NEWCAR.BILLING",
+            label="Rechnungsabgleich",
+            tables=["cobra.CdnBuchKopf", "cobra.CdnBuchKtoSt", "cobra.CdnBuchPos"],
+            join_snippet="""\
+cobra.CdnBuchKopf bk
+LEFT JOIN cobra.CdnBuchKtoSt kt ON kt.BUCHKOPF_ID = bk.ID
+LEFT JOIN cobra.CdnBuchPos bp ON bp.BUCHKOPF_ID = bk.ID""",
+            date_facet="CdnBuchKopf.BuchDatum",
+            notes=(
+                "#39: `CdnBuchKopf.VkRechId` (the doc's claimed link back to CdnVkRech, on "
+                "both the ER diagram AND the supplementary CdnBuchPos section) does not exist "
+                "live -- CdnBuchKopf links to the order side only, via `AUFTRAGK_ID`/"
+                "`AUFTRAGKSPLITT_ID` (both -> CdnAuftragK.ID/CdnAuftragKSplitt.ID, 100% match), "
+                "never directly to an invoice row. `CdnBuchKtoSt.Saldo` (the doc's 'unbilled "
+                "orders' example query filters on `b.Saldo > 0`) also does not exist -- an open "
+                "balance has to be computed from `SUM(Betrag)` grouped by `SollHaben` ('S' = "
+                "Soll/debit, 'H' = Haben/credit) instead, there is no precomputed running "
+                "balance column. `BUCHKOPF_ID` -> `CdnBuchKopf.ID` verified 100% for both "
+                "CdnBuchKtoSt (289137 rows) and CdnBuchPos (160034 rows)."
+            ),
+        ),
+        ScopeLeaf(
+            id="NEWCAR.PURCHASING",
+            label="Fahrzeugeinkauf",
+            tables=[
+                "cobra.CdnEinkKopf",
+                "cobra.CdnEinkPos",
+                "cobra.CdnEkBuchKopf",
+                "cobra.CdnEkBuchKtoSt",
+            ],
+            join_snippet="""\
+cobra.CdnEinkKopf ek
+LEFT JOIN cobra.CdnEinkPos ep ON ep.EinkKopfId = ek.EinkKopfId
+LEFT JOIN cobra.CdnEkBuchKopf ebk ON ebk.EINKKOPF_ID = ek.EinkKopfId
+LEFT JOIN cobra.CdnEkBuchKtoSt ebs ON ebs.EKBUCHKOPF_ID = ebk.ID""",
+            date_facet="CdnEinkKopf.RechngDatum",
+            notes=(
+                "#39: the doc's diagram claims `CdnEinkPos }o--o| CdnAuftragK : \"FzgStammId"
+                "(via Fzg)\"` -- CdnEinkPos has no FzgStammId column at all (live schema), so "
+                "this cross-link to the sales order does not exist; CdnEinkPos only joins up "
+                "to its own header, `CdnEinkKopf.EinkKopfId` (99.96% match, 142392/142448) -- "
+                "note this is the business key, not `.CID` or a doc-style `.ID` (CdnEinkKopf "
+                "has no `ID` column). `CdnEkBuchKopf`/`CdnEkBuchKtoSt` (the purchasing-side "
+                "mirror of NEWCAR.BILLING's settlement cluster) link back to CdnEinkKopf via "
+                "`EINKKOPF_ID` at 91-94% match -- soft-verified, slightly below the ~100% seen "
+                "elsewhere in this tree, but the only candidate key and consistent with the "
+                "table's small size (35/149 rows). `EinkPosTyp = '0'` empirically marks the "
+                "vehicle-itself line (avg cost ~14,354 vs. hundreds for other codes) vs. "
+                "accessories/fees on other codes -- an observed pattern, not a decoded "
+                "dictionary (no CdnEinkPosTyp-style lookup table was found in this candidate "
+                "set)."
+            ),
+        ),
+    ],
+)
+
+
+TREES: dict[str, ScopeTree] = {"LEAD": LEAD_TREE, "CUSTOMER": CUSTOMER_TREE, "NEWCAR": NEWCAR_TREE}
 
 
 class ScopeTreeError(Exception):

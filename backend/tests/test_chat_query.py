@@ -275,7 +275,7 @@ def test_change_topic_from_followup_returns_switch_variant_greeting(monkeypatch)
     assert state.date_to is None
     assert "stattdessen" in response.bot_message  # lightweight variant, not "Guten Tag"
     assert "Guten Tag" not in response.bot_message
-    assert {c.id for c in response.choices} == {"LEAD", "CUSTOMER"}
+    assert {c.id for c in response.choices} == {"LEAD", "CUSTOMER", "NEWCAR"}
 
 
 def test_wrong_action_at_followup_reprompts_followup_untouched(monkeypatch):

@@ -1,4 +1,5 @@
-"""Deterministic schema supply for LEAD + CUSTOMER (mvp-request D2 — replaces vector RAG for MVP1).
+"""Deterministic schema supply for LEAD + CUSTOMER + NEWCAR (mvp-request D2 — replaces
+vector RAG for MVP1).
 
 Compressed DDL cards + semantic notes, assembled by get_schema_context(tables) into the
 generate_sql prompt's schema_context. All column names verified against the live DB
@@ -40,6 +41,18 @@ code" story above rather than contradicting it:
   (18/20 sample rows match) despite the unrelated name — noted as a warning, not asserted as
   a real relationship (no declared constraint, no doc support, could be coincidence at this
   sample size).
+
+#39 extends this file with a card for every table in every NEWCAR scope-tree leaf — all
+verified live on 2026-07-08. The Cdn* (new-car) tables have no declared FK constraints
+anywhere either (same as Ba*/Cdi*, confirmed via sys.foreign_keys), but drift further from
+their source doc than #28's LEAD/CUSTOMER pass found: several columns the doc's own ER
+diagram and flagship example queries depend on — CdnFzgVerkauf.VerkaufDatum,
+CdnAuftragK.Termin/.LieferDatum, CdnAuftragK.Geloescht, CdnVkRech.Status/Bruttobetrag/
+KundenId, CdnBuchKopf.VkRechId, CdnBuchKtoSt.Saldo, CdnInzahlg.Inzahlgpreis,
+CdnFzgReservierung's claimed FzgStammId, CdnEinkPos's claimed FzgStammId — do not exist on
+the live tables at all, confirmed via INFORMATION_SCHEMA.COLUMNS, not just a failed query.
+Every NEWCAR card below flags this per-table where it applies; see
+docs/scope-trees.md's NEWCAR Known Gaps for the full account.
 """
 
 _CARDS: dict[str, str] = {
@@ -339,6 +352,291 @@ CrmAutomationActions(
   OrderIndex INT,
   CreateUser, CreateDate DATETIME, ModifyDate DATETIME, ModifyUser
 )""",
+    # --- NEWCAR tree (#39) -- verified live 2026-07-08. No Cdn* table anywhere has a
+    # declared FK constraint (same situation as Ba*/Cdi*, see module docstring); every
+    # relationship below was verified by row-count join match rate, not sys.foreign_keys.
+    # Several columns the source doc's own ER diagram and example queries depend on do not
+    # exist live at all -- flagged per-card below, not just in scope_tree.py's leaf notes.
+    "cobra.CdnAuftragK": """\
+-- cobra.CdnAuftragK: New-car sales order header, hub table of the NEWCAR domain (Neuwagenauftrag)
+-- WARNING: no soft-delete/Geloescht column exists live (the ER doc claims one) -- there is
+--   no "deleted" flag to filter on for this table.
+-- WARNING: AngStatus is a status code with no verified dictionary in this candidate set.
+CdnAuftragK(
+  CID,                      -- internal row surrogate key -- NOT what child tables reference, see ID
+  ID,                       -- real business key, referenced by every child table as AUFTRAGK_ID
+  AuftragsId INT,           -- human-facing order number (not globally unique)
+  KundenId,                 -- FK -> BaAddress.AddressId (cross-theme, CUSTOMER, out of D5 scope)
+  FzgStammId,               -- FK -> CdvFzgStamm.CID (cross-theme, VEHICLE, out of D5 scope)
+  KundenBeraterId,          -- sales advisor/consultant identifier
+  AuftragsDatum DATETIME2,  -- order date, ~100% populated -- date facet for OVERVIEW/ORDER
+  Marke, Typ, ModellBez,    -- brand/type/model, plain text, safe to filter/group
+  FahrgestellNr,            -- VIN
+  AmtlKennz,                -- license plate
+  KmStand INT,              -- odometer at order time -- GW/used-vehicle contracts route through
+                             -- this same table (see GwVertragsArt), don't assume every row is 0 km
+  GwVertragsArt,            -- '' | '0' | '1', mostly empty in this sample -- unreliable as a filter
+  AngStatus SMALLINT        -- order status code, see WARNING above
+)""",
+    "cobra.CdnAuftragsPos": """\
+-- cobra.CdnAuftragsPos: order line items (vehicle + accessories + fees) under one CdnAuftragK
+CdnAuftragsPos(
+  CID, ID,
+  AUFTRAGK_ID,        -- FK -> CdnAuftragK.ID (NOT .CID -- verified live, 100% match)
+  AUFTRAGKSPLITT_ID,  -- FK -> CdnAuftragKSplitt.ID
+  PosNr INT,
+  PosArtId,           -- line-type code, no verified dictionary in this candidate set
+  SachNr,             -- part/article number
+  Anzahl DECIMAL,
+  VKPreis DECIMAL, EKPreis DECIMAL, RabProz DECIMAL, RabBetrag DECIMAL, PosBetrag DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnAuftragKSplitt": """\
+-- cobra.CdnAuftragKSplitt: billing/payment split for one CdnAuftragK -- also carries a full
+--   duplicate copy of the customer's invoice address (legacy print-layout pattern), omitted
+--   below for token budget (~90 of its 116 live columns are Rech*/address fields)
+CdnAuftragKSplitt(
+  CID, ID,
+  AUFTRAGK_ID,          -- FK -> CdnAuftragK.ID (100% match, verified live)
+  KundenId,             -- FK -> BaAddress.AddressId (cross-theme)
+  Status INT,           -- payment/split status code, no verified dictionary
+  RechNr INT, RechDatum DATETIME2,
+  BetragNetto DECIMAL, BetragBrutto DECIMAL,
+  ZahlArtId,            -- payment method code
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnAuftragsSerAus": """\
+-- cobra.CdnAuftragsSerAus: OEM serial-number/external-reference lines reported per order (114k rows)
+CdnAuftragsSerAus(
+  CID, ID,
+  AUFTRAGK_ID,   -- FK -> CdnAuftragK.ID (96.5% match, 109985/114016 -- soft-verified, not 100%)
+  AuftragsId INT,
+  SerAusId, Bezeichnung,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnAuftragSperre": """\
+-- cobra.CdnAuftragSperre: order lock/unlock EVENT LOG -- NOT a "currently locked" flag table
+-- WARNING: SperrKz = '1' means locked, '0' means released; 16853 of 16863 rows are '0'
+--   (i.e. this is mostly release events), so COUNT(*) massively overcounts "how many
+--   orders are locked now" -- filter WHERE SperrKz = 1 for current state (10 rows).
+CdnAuftragSperre(
+  CID,
+  AUFTRAGK_ID,   -- FK -> CdnAuftragK.ID (100% match, verified live)
+  SperrArt,      -- lock-type code ('K'/'B'/'R' observed, no verified dictionary)
+  SperrKz,       -- '1' = locked, '0' = released, see WARNING
+  Benutzer, Zeit DATETIME2
+)""",
+    "cobra.CdnAuftragsSteuer": """\
+-- cobra.CdnAuftragsSteuer: tax breakdown lines for one CdnAuftragKSplitt
+CdnAuftragsSteuer(
+  CID, ID,
+  AUFTRAGKSPLITT_ID,   -- FK -> CdnAuftragKSplitt.ID (100% match -- NOT CdnAuftragK directly)
+  SteuerId SMALLINT,
+  Prozent DECIMAL, Basis DECIMAL, Betrag DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnFzgVerkauf": """\
+-- cobra.CdnFzgVerkauf: vehicle delivery/sale record, hub of the NEWCAR.DELIVERY leaf
+--   (170 live columns total, key subset below)
+-- WARNING: the doc's ER diagram lists a "VerkaufDatum" column -- it does NOT exist live at
+--   all (confirmed via INFORMATION_SCHEMA.COLUMNS). Use RechDatum (invoice date, ~96%
+--   populated) or AuslieferDat (delivery date, only ~60% populated) instead.
+CdnFzgVerkauf(
+  CID, ID,                     -- ID is the real business key, referenced by every child table below
+  FzgStammId,                  -- FK -> CdvFzgStamm.CID (cross-theme)
+  FgstNr,                      -- VIN
+  VKRECH_ID,                   -- FK -> CdnVkRech.VkRechId (100% match)
+  Verkaeufer1Id, Verkaeufer2Id,-- FK -> CdnVerkaeufer.ID (99.9% match for Verkaeufer1Id)
+  KaeuferId,                   -- buyer identifier
+  RechDatum DATETIME2,         -- invoice date, best date-column coverage -- this leaf's date facet
+  AuslieferDat DATETIME2,      -- delivery/handover date, only ~60% populated, see WARNING
+  KomplettPreis DECIMAL, PrsGesamt DECIMAL, PrsGesamtBrutto DECIMAL,
+  NachlGesamtProz DECIMAL, NachlGesamtBetrag DECIMAL,  -- total discount %, amount
+  Lagerplatz,                  -- storage-location code, plain text (matches CdnLagerplatzHist.Lagerplatz)
+  AuftragsStatus SMALLINT,     -- status code, no verified dictionary
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnVkRech": """\
+-- cobra.CdnVkRech: new-car sales invoice header
+-- WARNING: the doc claims Status/Bruttobetrag/KundenId columns -- none exist live. Real
+--   columns are BetragNetto/BetragSteuerFrei/BetragMwst (no precomputed gross total) and
+--   there is no customer link at all on this table (go via CdnFzgVerkauf/CdnAuftragK instead).
+CdnVkRech(
+  CID,
+  VkRechId,          -- business key, referenced by CdnFzgVerkauf.VKRECH_ID and CdnVkRechP.VKRECH_ID
+  AuftragKId,        -- FK -> CdnAuftragK.ID (100% match)
+  AuftragKSplittId,  -- FK -> CdnAuftragKSplitt.ID (100% match)
+  FzgVerkaufId,      -- FK -> CdnFzgVerkauf.ID (100% match)
+  RechNr, RechDat DATETIME2,   -- NOTE: column is RechDat, not RechDatum (that's CdnFzgVerkauf's column)
+  BetragNetto DECIMAL, BetragSteuerFrei DECIMAL, BetragMwst DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnVkRechP": """\
+-- cobra.CdnVkRechP: sales-invoice line items (vehicle vs. accessory vs. discount, via PosArtId)
+CdnVkRechP(
+  CID, ID,
+  VKRECH_ID,      -- FK -> CdnVkRech.VkRechId
+  FZGVERKAUF_ID,  -- FK -> CdnFzgVerkauf.ID
+  PosArtId,       -- line-type code, no verified dictionary
+  VKPreis DECIMAL, EKPreis2 DECIMAL, RabBetrag DECIMAL, EinstWert DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnVkPreis": """\
+-- cobra.CdnVkPreis: historical price snapshot for one CdnFzgVerkauf (multiple rows per
+--   vehicle as pricing evolves -- initial quote vs. final invoice, per PreisArt)
+CdnVkPreis(
+  CID,
+  FzgVerkaufId,   -- FK -> CdnFzgVerkauf.ID (100% match)
+  PreisArt,       -- snapshot type/stage code
+  PrsDatum DATETIME2,
+  KomplettPreis DECIMAL, PrsGesamt DECIMAL, PrsGesamtBrutto DECIMAL,
+  NachlFahrzeug DECIMAL, NachlGesamt DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnFzgReservierung": """\
+-- cobra.CdnFzgReservierung: vehicle reservation (customer holds a car before delivery), 83 rows
+-- WARNING: the doc's own example query joins this table to CdvFzgStamm via FzgStammId --
+--   that column does not exist here; the only vehicle link is FzgVerkaufId.
+CdnFzgReservierung(
+  CID, ID,
+  FzgVerkaufId,   -- FK -> CdnFzgVerkauf.ID (100% match)
+  KundenId,       -- FK -> BaAddress.AddressId (cross-theme)
+  VerkaeuferId,   -- advisor identifier
+  ReserviergDat DATETIME2,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnInzahlg": """\
+-- cobra.CdnInzahlg: trade-in (old car accepted against a new-car purchase) -- only 3 rows in
+--   this sample. docs/check_crm.md flags this table as valuable and entirely unused --
+--   kept as its own bucket-A/B pair despite the thin data, see leaf_question_bank.yaml.
+-- WARNING: the doc's example query references "Inzahlgpreis" -- the real column is AnkPreis.
+CdnInzahlg(
+  CID, ID,
+  FzgVerkaufid,   -- FK -> CdnFzgVerkauf.ID (100% match; lowercase "id", same column)
+  Kilometer INT, Tacho INT,
+  AnkPreis DECIMAL   -- trade-in purchase price (NOT "Inzahlgpreis")
+)""",
+    "cobra.CdnPraeZusatz": """\
+-- cobra.CdnPraeZusatz: manufacturer subsidy/bonus add-on per delivered vehicle (Prämie)
+CdnPraeZusatz(
+  CID, ID,
+  FzgVerkaufId,   -- FK -> CdnFzgVerkauf.ID (99.8% match, 15218/15245)
+  ZinsFreiTage INT, ZinsFreiBeginn DATETIME2,
+  BHdlZinsFreiTage INT, BHdlZinsFreiBeginn DATETIME2
+)""",
+    "cobra.CdnLagerplatzHist": """\
+-- cobra.CdnLagerplatzHist: vehicle storage-location change history (move in/out of a lot/bay)
+CdnLagerplatzHist(
+  CID, ID,
+  FZGVERKAUF_ID,   -- FK -> CdnFzgVerkauf.ID (100% match)
+  Lagerplatz,      -- storage location, plain text code
+  Datum DATETIME2, Uhrzeit DATETIME2
+)""",
+    "cobra.CdnFzgUmbuchung": """\
+-- cobra.CdnFzgUmbuchung: vehicle inventory re-numbering (old car-number -> new car-number), 46 rows
+CdnFzgUmbuchung(
+  CID, ID,
+  FzgVerkaufId,   -- FK -> CdnFzgVerkauf.ID (100% match)
+  WagenNr_Alt, WagenNr,
+  BuchungsDatum DATETIME2
+)""",
+    "cobra.CdnVerkaeufer": """\
+-- cobra.CdnVerkaeufer: sales advisor master table (80 rows)
+CdnVerkaeufer(
+  CID,
+  ID,             -- business key, referenced by CdnFzgVerkauf.Verkaeufer1Id/Verkaeufer2Id (99.9% match)
+  SuchBegriff,    -- human-readable name, "Lastname, Firstname" -- the ONLY readable-name field
+  VerkaeuferNr,   -- short staff number, not a name
+  Team, ProvisionsArt, VerkaeuferArt
+)""",
+    "cobra.CdnBuchKopf": """\
+-- cobra.CdnBuchKopf: new-car settlement/booking document header
+-- WARNING: the doc claims a VkRechId column linking to CdnVkRech -- it does NOT exist live;
+--   this table links to the order side only (AUFTRAGK_ID/AUFTRAGKSPLITT_ID), never
+--   directly to an invoice row.
+CdnBuchKopf(
+  CID, ID,
+  AUFTRAGK_ID,        -- FK -> CdnAuftragK.ID (100% match)
+  AUFTRAGKSPLITT_ID,  -- FK -> CdnAuftragKSplitt.ID (100% match)
+  BelegNr INT, BuchDatum DATETIME2,
+  Betrag DECIMAL, SollHaben,  -- 'S' = Soll/debit, 'H' = Haben/credit
+  Status,             -- document status, no verified dictionary
+  Fehler INT,         -- error flag, 0 for every row in this sample
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnBuchKtoSt": """\
+-- cobra.CdnBuchKtoSt: open-item/account-statement lines under one CdnBuchKopf (289k rows)
+-- WARNING: the doc's "unbilled orders" example query filters on a Saldo column -- it does
+--   NOT exist live. Compute an open balance as SUM(Betrag) grouped by SollHaben instead;
+--   there is no precomputed running-balance column.
+CdnBuchKtoSt(
+  CID,
+  BUCHKOPF_ID,         -- FK -> CdnBuchKopf.ID (100% match)
+  AUFTRAGKSPLITT_ID, AUFTRAGSPOS_ID,   -- also link directly to the order-splitt/position level
+  KtoNr,               -- account number
+  SollHaben,           -- 'S' = Soll/debit, 'H' = Haben/credit -- use to compute open balance
+  Betrag DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnBuchPos": """\
+-- cobra.CdnBuchPos: booking-document line items under one CdnBuchKopf (160k rows -- the
+--   largest table the 02-newcar-sales doc itself flags as a "重要遗漏" / important omission)
+CdnBuchPos(
+  CID, ID,
+  BUCHKOPF_ID,          -- FK -> CdnBuchKopf.ID (100% match)
+  AUFTRAGKSPLITT_ID, AUFTRAGSPOS_ID,  -- also link directly to the order-splitt/position level
+  Status,               -- posting status, no verified dictionary
+  VerbuchungsKz,        -- posting marker code
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnEinkKopf": """\
+-- cobra.CdnEinkKopf: vehicle purchase order header (dealer buying from the OEM/manufacturer)
+CdnEinkKopf(
+  CID,
+  EinkKopfId,         -- business key -- NOTE: this table has no "ID" column at all, unlike most others here
+  FzgVerkaufId,       -- FK -> CdnFzgVerkauf.ID (100% match, 38193/38204)
+  KundenId,           -- FK -> BaAddress.AddressId (cross-theme)
+  Lieferant, KreditorId,           -- supplier identifiers
+  RechngNr, RechngDatum DATETIME2, -- invoice number/date, ~99.9% populated -- this leaf's date facet
+  ReSuNetto DECIMAL, ReSuMwst DECIMAL, ReSuBrutto DECIMAL,
+  Verbuchung INT,     -- posted flag (1 = posted; only 11/38204 rows in this sample)
+  EkSachKto INT,      -- accounting-code dictionary reference, not joined here
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnEinkPos": """\
+-- cobra.CdnEinkPos: purchase order line items under one CdnEinkKopf (142k rows)
+-- WARNING: the doc's ER diagram claims a link to CdnAuftragK via FzgStammId ("via Fzg") --
+--   this table has no FzgStammId column live; the only relationship is up to CdnEinkKopf.
+CdnEinkPos(
+  CID,
+  EinkPosId,
+  EinkKopfId,   -- FK -> CdnEinkKopf.EinkKopfId (99.96% match, 142392/142448)
+  EinkPosTyp,   -- line-type code -- '0' empirically marks the vehicle-itself line (avg
+                -- EkPreis ~14,354 vs. hundreds for other codes), not a verified dictionary
+  EkPreis DECIMAL, EkPreisGeplant DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnEkBuchKopf": """\
+-- cobra.CdnEkBuchKopf: purchasing-side settlement document header (mirrors CdnBuchKopf, but
+--   for what the dealer owes the OEM rather than what the customer owes the dealer), 35 rows
+CdnEkBuchKopf(
+  CID, ID,
+  FZGVERKAUF_ID,   -- FK -> CdnFzgVerkauf.ID (91.4% match, 32/35 -- soft-verified)
+  EINKKOPF_ID,     -- FK -> CdnEinkKopf.EinkKopfId (94.3% match, 33/35 -- soft-verified)
+  BelegNr, BuchDatum DATETIME2,
+  Betrag DECIMAL, SollHaben,
+  Status,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdnEkBuchKtoSt": """\
+-- cobra.CdnEkBuchKtoSt: open-item lines under one CdnEkBuchKopf (149 rows)
+CdnEkBuchKtoSt(
+  CID, ID,
+  EKBUCHKOPF_ID,           -- FK -> CdnEkBuchKopf.ID (100% match)
+  EINKKOPF_ID, EINKPOS_ID, -- also link directly to the purchase order/position level
+  KtoNr, SollHaben, Betrag DECIMAL,
+  CreateDate DATETIME2
+)""",
 }
 
 # Structured mirror of the column lists inside _CARDS above (deliberately excludes
@@ -439,6 +737,86 @@ _COLUMNS: dict[str, list[str]] = {
     # ActionTypeId excluded -- masked code (FK -> CrmAutomationActionTypes.Id).
     "cobra.CrmAutomationActions": [
         "Id", "RuleId", "OrderIndex", "CreateUser", "CreateDate", "ModifyDate", "ModifyUser",
+    ],
+    # --- NEWCAR tree (#39) -- AngStatus/PosArtId/SperrArt/Status/EinkPosTyp-style code
+    # columns excluded throughout, same "no verified dictionary" policy as elsewhere in
+    # this file; SollHaben/SperrKz are kept since their two-value meaning is verified.
+    "cobra.CdnAuftragK": [
+        "CID", "ID", "AuftragsId", "KundenId", "FzgStammId", "KundenBeraterId", "AuftragsDatum",
+        "Marke", "Typ", "ModellBez", "FahrgestellNr", "AmtlKennz", "KmStand", "GwVertragsArt",
+    ],
+    "cobra.CdnAuftragsPos": [
+        "CID", "ID", "AUFTRAGK_ID", "AUFTRAGKSPLITT_ID", "PosNr", "SachNr", "Anzahl",
+        "VKPreis", "EKPreis", "RabProz", "RabBetrag", "PosBetrag", "CreateDate",
+    ],
+    "cobra.CdnAuftragKSplitt": [
+        "CID", "ID", "AUFTRAGK_ID", "KundenId", "RechNr", "RechDatum", "BetragNetto",
+        "BetragBrutto", "CreateDate",
+    ],
+    "cobra.CdnAuftragsSerAus": [
+        "CID", "ID", "AUFTRAGK_ID", "AuftragsId", "SerAusId", "Bezeichnung", "CreateDate",
+    ],
+    "cobra.CdnAuftragSperre": ["CID", "AUFTRAGK_ID", "SperrKz", "Benutzer", "Zeit"],
+    "cobra.CdnAuftragsSteuer": [
+        "CID", "ID", "AUFTRAGKSPLITT_ID", "SteuerId", "Prozent", "Basis", "Betrag", "CreateDate",
+    ],
+    "cobra.CdnFzgVerkauf": [
+        "CID", "ID", "FzgStammId", "FgstNr", "VKRECH_ID", "Verkaeufer1Id", "Verkaeufer2Id",
+        "KaeuferId", "RechDatum", "AuslieferDat", "KomplettPreis", "PrsGesamt", "PrsGesamtBrutto",
+        "NachlGesamtProz", "NachlGesamtBetrag", "Lagerplatz", "CreateDate",
+    ],
+    "cobra.CdnVkRech": [
+        "CID", "VkRechId", "AuftragKId", "AuftragKSplittId", "FzgVerkaufId", "RechNr", "RechDat",
+        "BetragNetto", "BetragSteuerFrei", "BetragMwst", "CreateDate",
+    ],
+    "cobra.CdnVkRechP": [
+        "CID", "ID", "VKRECH_ID", "FZGVERKAUF_ID", "VKPreis", "EKPreis2", "RabBetrag",
+        "EinstWert", "CreateDate",
+    ],
+    "cobra.CdnVkPreis": [
+        "CID", "FzgVerkaufId", "PreisArt", "PrsDatum", "KomplettPreis", "PrsGesamt",
+        "PrsGesamtBrutto", "NachlFahrzeug", "NachlGesamt", "CreateDate",
+    ],
+    "cobra.CdnFzgReservierung": [
+        "CID", "ID", "FzgVerkaufId", "KundenId", "VerkaeuferId", "ReserviergDat", "CreateDate",
+    ],
+    "cobra.CdnInzahlg": ["CID", "ID", "FzgVerkaufid", "Kilometer", "Tacho", "AnkPreis"],
+    "cobra.CdnPraeZusatz": [
+        "CID", "ID", "FzgVerkaufId", "ZinsFreiTage", "ZinsFreiBeginn", "BHdlZinsFreiTage",
+        "BHdlZinsFreiBeginn",
+    ],
+    "cobra.CdnLagerplatzHist": ["CID", "ID", "FZGVERKAUF_ID", "Lagerplatz", "Datum", "Uhrzeit"],
+    "cobra.CdnFzgUmbuchung": [
+        "CID", "ID", "FzgVerkaufId", "WagenNr_Alt", "WagenNr", "BuchungsDatum",
+    ],
+    "cobra.CdnVerkaeufer": [
+        "CID", "ID", "SuchBegriff", "VerkaeuferNr", "Team", "ProvisionsArt", "VerkaeuferArt",
+    ],
+    "cobra.CdnBuchKopf": [
+        "CID", "ID", "AUFTRAGK_ID", "AUFTRAGKSPLITT_ID", "BelegNr", "BuchDatum", "Betrag",
+        "SollHaben", "CreateDate",
+    ],
+    "cobra.CdnBuchKtoSt": [
+        "CID", "BUCHKOPF_ID", "AUFTRAGKSPLITT_ID", "AUFTRAGSPOS_ID", "KtoNr", "SollHaben",
+        "Betrag", "CreateDate",
+    ],
+    "cobra.CdnBuchPos": [
+        "CID", "ID", "BUCHKOPF_ID", "AUFTRAGKSPLITT_ID", "AUFTRAGSPOS_ID", "CreateDate",
+    ],
+    "cobra.CdnEinkKopf": [
+        "CID", "EinkKopfId", "FzgVerkaufId", "KundenId", "Lieferant", "KreditorId", "RechngNr",
+        "RechngDatum", "ReSuNetto", "ReSuMwst", "ReSuBrutto", "Verbuchung", "CreateDate",
+    ],
+    "cobra.CdnEinkPos": [
+        "CID", "EinkPosId", "EinkKopfId", "EinkPosTyp", "EkPreis", "EkPreisGeplant", "CreateDate",
+    ],
+    "cobra.CdnEkBuchKopf": [
+        "CID", "ID", "FZGVERKAUF_ID", "EINKKOPF_ID", "BelegNr", "BuchDatum", "Betrag",
+        "SollHaben", "CreateDate",
+    ],
+    "cobra.CdnEkBuchKtoSt": [
+        "CID", "ID", "EKBUCHKOPF_ID", "EINKKOPF_ID", "EINKPOS_ID", "KtoNr", "SollHaben",
+        "Betrag", "CreateDate",
     ],
 }
 

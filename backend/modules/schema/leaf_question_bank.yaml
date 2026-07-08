@@ -1,8 +1,8 @@
-# Per-leaf question bank for the LEAD + CUSTOMER scope trees (#29).
+# Per-leaf question bank for the LEAD + CUSTOMER + NEWCAR scope trees (#29, #39).
 #
 # Sources: each theme doc's "现实中容易出现的问题" table, docs/check_crm.md's 2026-07-04
-# DB-verified findings (re-verified live here on 2026-07-07 -- row counts/values can drift,
-# see docs/scope-trees.md Known Gaps), and #27/#28's own live-verified schema knowledge.
+# DB-verified findings (re-verified live here -- row counts/values can drift, see
+# docs/scope-trees.md Known Gaps), and #27/#28/#39's own live-verified schema knowledge.
 #
 # Bank != prompt (#29): only the top 2-3 "verified: true, bucket: A" entries per leaf are
 # meant to ever become a generate_sql few-shot -- the loader (#30) does that selection, not
@@ -357,6 +357,228 @@
   row_count: 1
   chart_hint: kpi
   note: "KNOWN GAP: demonstrates the ~52% BaAddInfo orphan rate already documented in #27/#28 (3573 of 6920 rows). Legitimate, verified, non-zero result -- held out of few-shots because it's about data quality, not a question a dealership user would typically ask; kept for eval so the model's handling of a 'large orphan count' scenario is tested."
+
+# --- NEWCAR.OVERVIEW (#39) --------------------------------------------------------------
+- id: newcar_overview_total
+  node: NEWCAR.OVERVIEW
+  bucket: A
+  question: "Wie viele Neuwagenaufträge haben wir insgesamt erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS NeuwagenauftraegeCount
+    FROM cobra.CdnAuftragK
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: newcar_overview_top_brands
+  node: NEWCAR.OVERVIEW
+  bucket: A
+  question: "Für welche Fahrzeugmarken werden die meisten Neuwagen bestellt?"
+  reference_sql: |
+    SELECT TOP 5 Marke, COUNT(*) AS AnzahlAuftraege
+    FROM cobra.CdnAuftragK
+    WHERE Marke IS NOT NULL AND Marke != ''
+    GROUP BY Marke
+    ORDER BY AnzahlAuftraege DESC
+  verified: true
+  row_count: 5
+  chart_hint: bar
+  note: "'FIAT' and 'Fiat' appear as separate top-5 groups -- a real data-entry casing inconsistency in Marke, not a query bug. Kept as a bucket-A few-shot anyway since normalizing case wasn't asked for and the query itself is correct; flagged here so the raw output isn't mistaken for a bug during eval."
+
+- id: newcar_overview_avg_km
+  node: NEWCAR.OVERVIEW
+  bucket: B
+  question: "Wie hoch ist der durchschnittliche Kilometerstand bei Auftragsanlage?"
+  reference_sql: |
+    SELECT AVG(KmStand) AS AvgKmStand
+    FROM cobra.CdnAuftragK
+    WHERE KmStand IS NOT NULL
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "KNOWN GAP: KmStand averages ~20,423 -- surprisingly high for 'new car' orders. CdnAuftragK.GwVertragsArt suggests used-vehicle (Gebrauchtwagen) contracts route through this same table, but GwVertragsArt is empty for most rows so it can't reliably filter new-vs-used. Held out as a data-quality caveat, not a clean few-shot."
+
+# --- NEWCAR.ORDER (#39) -------------------------------------------------------------------
+- id: newcar_order_avg_positions
+  node: NEWCAR.ORDER
+  bucket: A
+  question: "Wie viele Bestellpositionen hat ein Neuwagenauftrag im Durchschnitt?"
+  reference_sql: |
+    SELECT AVG(CAST(cnt AS FLOAT)) AS AvgPositionsPerOrder
+    FROM (
+      SELECT AUFTRAGK_ID, COUNT(*) AS cnt
+      FROM cobra.CdnAuftragsPos
+      GROUP BY AUFTRAGK_ID
+    ) t
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: newcar_order_locked_now
+  node: NEWCAR.ORDER
+  bucket: A
+  question: "Wie viele Neuwagenaufträge sind aktuell gesperrt?"
+  reference_sql: |
+    SELECT COUNT(DISTINCT AUFTRAGK_ID) AS CurrentlyLockedOrders
+    FROM cobra.CdnAuftragSperre
+    WHERE SperrKz = 1
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "CdnAuftragSperre is a lock/unlock EVENT LOG, not a current-state flag table -- 16853 of 16863 rows have SperrKz = 0 (released). Filtering SperrKz = 1 is required for a 'currently locked' answer; COUNT(DISTINCT AUFTRAGK_ID) without that filter would overcount by three orders of magnitude (see schema_cards.py's CdnAuftragSperre card)."
+
+- id: newcar_order_tax_records
+  node: NEWCAR.ORDER
+  bucket: B
+  question: "Wie viele Steuerbuchungen wurden für Neuwagenaufträge erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS TaxRecordCount
+    FROM cobra.CdnAuftragsSteuer
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "Held out as a 'meta' accounting question about tax-line volume rather than about orders themselves -- kept for eval diversity, same rationale as lead_scoring_active_configs."
+
+# --- NEWCAR.DELIVERY (#39) ----------------------------------------------------------------
+- id: newcar_delivery_delivered_count
+  node: NEWCAR.DELIVERY
+  bucket: A
+  question: "Wie viele Fahrzeuge wurden bisher ausgeliefert?"
+  reference_sql: |
+    SELECT COUNT(*) AS DeliveredCount
+    FROM cobra.CdnFzgVerkauf
+    WHERE AuslieferDat IS NOT NULL
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: newcar_delivery_top_advisor
+  node: NEWCAR.DELIVERY
+  bucket: A
+  question: "Welcher Verkaufsberater hat die meisten Neuwagen verkauft?"
+  reference_sql: |
+    SELECT TOP 5 va.SuchBegriff AS Berater, COUNT(*) AS FahrzeugeVerkauft
+    FROM cobra.CdnFzgVerkauf v
+    JOIN cobra.CdnVerkaeufer va ON va.ID = v.Verkaeufer1Id
+    WHERE v.Verkaeufer1Id IS NOT NULL
+    GROUP BY va.SuchBegriff
+    ORDER BY FahrzeugeVerkauft DESC
+  verified: true
+  row_count: 5
+  chart_hint: bar
+
+- id: newcar_delivery_avg_discount
+  node: NEWCAR.DELIVERY
+  bucket: A
+  question: "Wie hoch ist der durchschnittliche Gesamtrabatt auf Neuwagen?"
+  reference_sql: |
+    SELECT AVG(NachlGesamtProz) AS AvgDiscountPct
+    FROM cobra.CdnFzgVerkauf
+    WHERE NachlGesamtProz IS NOT NULL
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: newcar_delivery_tradein
+  node: NEWCAR.DELIVERY
+  bucket: B
+  question: "Wie viele Fahrzeuge haben wir in Zahlung genommen und zu welchem Durchschnittspreis?"
+  reference_sql: |
+    SELECT COUNT(*) AS TradeInCount, AVG(CAST(AnkPreis AS FLOAT)) AS AvgTradeInPrice
+    FROM cobra.CdnInzahlg
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "KNOWN GAP (docs/check_crm.md's own callout): only 3 rows exist for CdnInzahlg in this sample, so the average is barely a sample. Kept because check_crm.md explicitly flagged this table as valuable and entirely unused elsewhere -- not because the result is statistically meaningful yet."
+
+- id: newcar_delivery_open_reservations
+  node: NEWCAR.DELIVERY
+  bucket: B
+  question: "Wie viele Fahrzeugreservierungen sind aktuell offen?"
+  reference_sql: |
+    SELECT COUNT(*) AS OpenReservations
+    FROM cobra.CdnFzgReservierung
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "Held out for eval diversity -- CdnFzgReservierung has no cancelled/fulfilled status column of its own (verified live), so 'open' here really means 'ever reserved', not filtered to currently-pending; a stricter answer would cross-check against CdnFzgVerkauf.AuslieferDat to exclude already-delivered vehicles, not attempted here."
+
+# --- NEWCAR.BILLING (#39) ------------------------------------------------------------------
+- id: newcar_billing_total
+  node: NEWCAR.BILLING
+  bucket: A
+  question: "Wie viele Buchungsbelege wurden für Neuwagen insgesamt erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS BillingDocCount
+    FROM cobra.CdnBuchKopf
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: newcar_billing_by_sollhaben
+  node: NEWCAR.BILLING
+  bucket: A
+  question: "Wie hoch ist die Gesamtsumme der Soll- und Haben-Buchungen?"
+  reference_sql: |
+    SELECT SollHaben, SUM(Betrag) AS TotalAmount, COUNT(*) AS n
+    FROM cobra.CdnBuchKtoSt
+    WHERE SollHaben IS NOT NULL
+    GROUP BY SollHaben
+  verified: true
+  row_count: 2
+  chart_hint: bar
+  note: "No precomputed running-balance column exists on CdnBuchKtoSt (the doc's own 'unbilled orders' example query assumes a Saldo column that doesn't exist live) -- this SUM(Betrag) grouped by SollHaben ('S'=Soll/debit, 'H'=Haben/credit) is the live-verified way to get an open-balance-shaped answer instead."
+
+- id: newcar_billing_errors
+  node: NEWCAR.BILLING
+  bucket: B
+  question: "Wie viele Buchungsbelege haben einen Fehlerstatus?"
+  reference_sql: |
+    SELECT COUNT(*) AS ErrorDocCount
+    FROM cobra.CdnBuchKopf
+    WHERE Fehler != 0
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "Legitimate, verified 0 -- every CdnBuchKopf row in this sample has Fehler = 0. Held out of few-shots for the same reason as lead_activity_neglected_high_score: a few-shot that always returns 0 would teach the model to expect emptiness, which isn't true in general."
+
+# --- NEWCAR.PURCHASING (#39) ---------------------------------------------------------------
+- id: newcar_purchasing_total
+  node: NEWCAR.PURCHASING
+  bucket: A
+  question: "Wie viele Fahrzeuge wurden vom Werk eingekauft?"
+  reference_sql: |
+    SELECT COUNT(*) AS PurchaseOrderCount
+    FROM cobra.CdnEinkKopf
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: newcar_purchasing_avg_vehicle_price
+  node: NEWCAR.PURCHASING
+  bucket: A
+  question: "Wie hoch ist der durchschnittliche Einkaufspreis pro Fahrzeug?"
+  reference_sql: |
+    SELECT AVG(EkPreis) AS AvgVehiclePurchasePrice
+    FROM cobra.CdnEinkPos
+    WHERE EinkPosTyp = '0'
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "EinkPosTyp = '0' is an empirically-observed 'vehicle itself' line code (avg price ~14,354 vs. hundreds for other codes, see schema_cards.py's CdnEinkPos card), not a decoded dictionary value -- flagged so this isn't mistaken for a verified business rule."
+
+- id: newcar_purchasing_posted
+  node: NEWCAR.PURCHASING
+  bucket: B
+  question: "Wie viele Einkaufsbelege wurden bereits verbucht?"
+  reference_sql: |
+    SELECT COUNT(*) AS PostedCount
+    FROM cobra.CdnEinkKopf
+    WHERE Verbuchung = 1
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "Only 11 of 38204 purchase headers are marked Verbuchung = 1 in this sample -- legitimate, verified, but a small subset; held out of few-shots for the same 'don't teach a near-zero-rate scenario as normal' reasoning as newcar_billing_errors."
 
 # --- Bucket C: out-of-scope probes (not leaf-specific) ----------------------------------
 - id: probe_weather

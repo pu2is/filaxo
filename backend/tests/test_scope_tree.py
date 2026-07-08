@@ -11,7 +11,7 @@ from modules.schema.scope_tree import CUSTOMER_TREE, LEAD_TREE, ScopeTreeError, 
 
 
 def test_children_of_root_returns_themas():
-    assert set(children([])) == {"LEAD", "CUSTOMER"}
+    assert set(children([])) == {"LEAD", "CUSTOMER", "NEWCAR"}
 
 
 def test_children_of_thema_returns_its_leaves():
