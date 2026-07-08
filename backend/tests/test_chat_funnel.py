@@ -242,7 +242,7 @@ def test_select_scope_at_greeting_reprompts_greeting():
     "date_from,date_to",
     [
         ("not-a-date", "2025-12-31"),  # malformed
-        ("2025-10-01", None),  # missing field
+        ("2025-10-01", "not-a-date"),  # malformed, other side
         ("2025-12-31", "2025-10-01"),  # reversed
     ],
 )
@@ -254,6 +254,23 @@ def test_invalid_time_range_reprompts_time_step_with_invalid_message(date_from, 
     assert sessions[sid].step == "time"
     assert sessions[sid].date_from is None
     assert sessions[sid].date_to is None
+
+
+@pytest.mark.parametrize(
+    "date_from,date_to,expected_snippet",
+    [
+        ("2025-10-01", None, "Zeitraum: ab 2025-10-01."),  # open upper bound
+        (None, "2025-12-31", "Zeitraum: bis 2025-12-31."),  # open lower bound
+        (None, None, "Stellen Sie jetzt Ihre Frage."),  # no input at all -> alle Zeitraum
+    ],
+)
+def test_open_ended_time_range_is_accepted(date_from, date_to, expected_snippet):
+    sid = walk_to_leaf("LEAD", "LEAD.SCORING")
+    response = send(sid, "set_time_range", date_from=date_from, date_to=date_to)
+    assert sessions[sid].step == "ready"
+    assert sessions[sid].date_from == date_from
+    assert sessions[sid].date_to == date_to
+    assert expected_snippet in response.bot_message
 
 
 def test_select_domain_again_at_scope_step_reprompts_scope():

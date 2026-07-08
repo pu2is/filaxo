@@ -254,12 +254,22 @@ def _time_prompt(session: SessionState, invalid: bool = False) -> ChatResponse:
     )
 
 
-def _ready_prompt(session: SessionState) -> ChatResponse:
+def _format_time_range(session: SessionState) -> str:
+    """Zeitraum prefix for the "ready" prompt (open-ended bounds). Empty string
+    covers both the facet-skip leaf (no time step was ever offered) and a leaf where the
+    user submitted the picker with both sides blank -- either way there's no range to
+    name, so the two cases render identically."""
     if session.date_from and session.date_to:
-        message = f"Zeitraum: {session.date_from} bis {session.date_to}. Stellen Sie jetzt Ihre Frage."
-    else:
-        # Facet-skip leaf (#31): no time step was ever offered, so there's no range to name.
-        message = "Stellen Sie jetzt Ihre Frage."
+        return f"Zeitraum: {session.date_from} bis {session.date_to}. "
+    if session.date_from:
+        return f"Zeitraum: ab {session.date_from}. "
+    if session.date_to:
+        return f"Zeitraum: bis {session.date_to}. "
+    return ""
+
+
+def _ready_prompt(session: SessionState) -> ChatResponse:
+    message = f"{_format_time_range(session)}Stellen Sie jetzt Ihre Frage."
     return ChatResponse(
         session_id=session.session_id,
         bot_message=message,
@@ -331,7 +341,7 @@ def _answer_question(session: SessionState, question: str) -> ChatResponse:
     tables = leaf["tables"]
     time_range = (
         TimeRange(date_from=session.date_from, date_to=session.date_to)
-        if session.date_from and session.date_to
+        if session.date_from or session.date_to
         else None
     )
     few_shots = get_few_shots(session.scope_path)

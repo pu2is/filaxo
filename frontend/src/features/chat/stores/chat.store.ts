@@ -63,11 +63,19 @@ export const useChatStore = defineStore('chat', () => {
 
   // D6/#37: set_time_range needs two values (date_from/date_to), which ChatRequest carries
   // as dedicated fields rather than the single payload string sendAction sends -- bypasses
-  // sendAction rather than bolting a second optional param onto its signature.
-  async function setTimeRange(dateFrom: string, dateTo: string) {
+  // sendAction rather than bolting a second optional param onto its signature. Either side
+  // may be null (open-ended bound -- the picker lets year/month/day stay blank).
+  async function setTimeRange(dateFrom: string | null, dateTo: string | null) {
     if (isLoading.value) return
-    history.value.push({ kind: 'user', id: crypto.randomUUID(), text: `Zeitraum: ${dateFrom} bis ${dateTo}` })
+    history.value.push({ kind: 'user', id: crypto.randomUUID(), text: `Zeitraum: ${_formatTimeRange(dateFrom, dateTo)}` })
     await _dispatch({ session_id: sessionId.value, action: 'set_time_range', date_from: dateFrom, date_to: dateTo })
+  }
+
+  function _formatTimeRange(dateFrom: string | null, dateTo: string | null): string {
+    if (dateFrom && dateTo) return `${dateFrom} bis ${dateTo}`
+    if (dateFrom) return `ab ${dateFrom}`
+    if (dateTo) return `bis ${dateTo}`
+    return 'alle Zeiträume'
   }
 
   function restart() {

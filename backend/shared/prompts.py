@@ -28,6 +28,8 @@ def build_generate_sql_prompt(
 
     # Dates are computed in Python (see modules/query/schemas.TimeRange) and injected
     # as an explicit ISO range here -- the 7B never computes "this month" itself (#24).
+    # Either bound may be open-ended -- neither one ever means "today" (this dataset's
+    # dates don't track wall-clock today, see CLAUDE.md).
     if date_from and date_to:
         parts += [
             "",
@@ -35,6 +37,22 @@ def build_generate_sql_prompt(
             f"Restrict the query to {date_from} through {date_to} (inclusive), applied to "
             "the date/datetime column noted in the schema comments above. Use these exact "
             "dates as literals; do not compute a relative range yourself.",
+        ]
+    elif date_from:
+        parts += [
+            "",
+            "# Time range",
+            f"Restrict the query to {date_from} onward (inclusive, no upper bound), applied "
+            "to the date/datetime column noted in the schema comments above. Use this exact "
+            "date as a literal; do not compute a relative range yourself.",
+        ]
+    elif date_to:
+        parts += [
+            "",
+            "# Time range",
+            f"Restrict the query to {date_to} or earlier (inclusive, no lower bound), applied "
+            "to the date/datetime column noted in the schema comments above. Use this exact "
+            "date as a literal; do not compute a relative range yourself.",
         ]
 
     if last_error:

@@ -37,7 +37,7 @@ function handleSubmit(text: string) {
   chat.sendAction('query', text, text)
 }
 
-function handleTimeRangeSubmit(dateFrom: string, dateTo: string) {
+function handleTimeRangeSubmit(dateFrom: string | null, dateTo: string | null) {
   chat.setTimeRange(dateFrom, dateTo)
 }
 
