@@ -1,7 +1,8 @@
-"""LEAD + CUSTOMER + NEWCAR scope trees (#27, #39): thema -> leaf, each leaf a fixed
-table set + JOIN snippet + time facet. This is the D5 scope tree in its multi-theme
-form -- thema -> leaf, i.e. depth 2 of the max-3-level design (no sub-sub-thema needed
-yet for any of these themas); consumed by the tree-walking funnel (chat/service.py, #31).
+"""LEAD + CUSTOMER + NEWCAR + FINANCE scope trees (#27, #39, #40): thema -> leaf, each
+leaf a fixed table set + JOIN snippet + time facet. This is the D5 scope tree in its
+multi-theme form -- thema -> leaf, i.e. depth 2 of the max-3-level design (no
+sub-sub-thema needed yet for any of these themas); consumed by the tree-walking funnel
+(chat/service.py, #31).
 
 Every leaf's table set and JOIN snippet was verified against the live DB
 (localhost,14330) on 2026-07-07, not just against the docs/0*-*-erDiagram.md text --
@@ -27,6 +28,14 @@ shape is built from). Load-bearing corrections from those passes:
   `CdnBuchKtoSt.Saldo`, `CdnVkRech.Status` -- do not exist on the live tables at all.
   See each NEWCAR leaf's notes below and docs/scope-trees.md's Known Gaps for the
   live equivalents used instead.
+- The 02-finance-billing doc (#40) repeats the exact same `Saldo`/due-date pattern:
+  `CdaBuchKtoSt.Saldo`/`.FaelligDatum` (its own "overdue receivables" flagship query's
+  dependencies) don't exist live either -- and this time even the doc's own *worked
+  example query* for CdcTagesStartEndeK/P joins on `.CID`, which resolves 0% live,
+  not just its ER diagram's claims. `CID` has now been confirmed to never be the real
+  join target anywhere across three separate legacy table families (Ba*/Cdi*, Cdn*,
+  Cda*/Cdc*) -- treat any future doc in this style the same way: verify the business-ID
+  column empirically, never trust `CID` just because an ER block marks it `PK`.
 """
 
 from dataclasses import dataclass
@@ -367,7 +376,159 @@ LEFT JOIN cobra.CdnEkBuchKtoSt ebs ON ebs.EKBUCHKOPF_ID = ebk.ID""",
 )
 
 
-TREES: dict[str, ScopeTree] = {"LEAD": LEAD_TREE, "CUSTOMER": CUSTOMER_TREE, "NEWCAR": NEWCAR_TREE}
+FINANCE_TREE = ScopeTree(
+    thema="FINANCE",
+    label="Finanzen & Kasse",
+    doc_ref="docs/02-finance-billing-erDiagram.md",
+    leaves=[
+        ScopeLeaf(
+            id="FINANCE.OVERVIEW",
+            label="Überblick",
+            tables=["cobra.CdaBuchKopf"],
+            join_snippet=None,
+            date_facet="CdaBuchKopf.BuchDatum",
+            notes=(
+                "Whole-thema catch-all leaf. #40: same situation as NEWCAR (#39) -- no "
+                "Cda*/Cdc*/Cdx*/SKR51* table has a declared FK constraint anywhere in "
+                "`cobra` (confirmed via sys.foreign_keys across all 41 candidate tables), so "
+                "every relationship in this tree is verified by live row-count join match "
+                "rate. `CdaBuchKopf.RechDatum` (present on the doc's ER diagram) does not "
+                "exist live -- `BuchDatum` (100% populated) is used instead."
+            ),
+        ),
+        ScopeLeaf(
+            id="FINANCE.WORKSHOP_BILLING",
+            label="Werkstattabrechnung",
+            tables=[
+                "cobra.CdaBuchKopf",
+                "cobra.CdaBuchKtoSt",
+                "cobra.CdaBuchPos",
+                "cobra.SKR51SachKto",
+            ],
+            join_snippet="""\
+cobra.CdaBuchKopf bk
+LEFT JOIN cobra.CdaBuchKtoSt kt ON kt.BUCHKOPF_ID = bk.ID
+LEFT JOIN cobra.CdaBuchPos bp ON bp.BUCHKOPF_ID = bk.ID
+LEFT JOIN cobra.SKR51SachKto sk ON sk.KontoNummer = kt.KtoNr""",
+            date_facet="CdaBuchKopf.BuchDatum",
+            notes=(
+                "#40: `CdaBuchKtoSt.BUCHKOPF_ID` -> `CdaBuchKopf.ID` is 100% verified "
+                "(1312094/1312098) -- same all-caps-underscored-FK-vs-CamelCase-business-key "
+                "pattern as #39's NEWCAR tree; `CID` is not the join target here either. "
+                "`CdaBuchKtoSt.KtoNr` -> `SKR51SachKto.KontoNummer` is only 79.2% verified "
+                "(1039159/1312098) -- soft-verified, LEFT JOIN required, not every posting "
+                "line resolves to a chart-of-accounts entry. WARNING: the doc's ER diagram "
+                "and its own flagship 'overdue receivables' example query both depend on "
+                "`CdaBuchKtoSt.Saldo` and `.FaelligDatum` -- NEITHER column exists live on "
+                "CdaBuchKtoSt (confirmed via INFORMATION_SCHEMA.COLUMNS). An open balance has "
+                "to be computed as `SUM(Betrag)` grouped by `SollHaben` ('S'=Soll/debit, "
+                "'H'=Haben/credit) instead; the due date that DOES exist lives one level up, "
+                "on `CdaBuchKopf.FaelligDatum` (only 58% populated, 75100/129966) -- join back "
+                "to the header to use it. Also: `CdaBuchKopf.RechDatum` (also on the doc's ER "
+                "diagram) does not exist live either, same as the OVERVIEW leaf's note."
+            ),
+        ),
+        ScopeLeaf(
+            id="FINANCE.POS_CASH",
+            label="Kassenbewegungen",
+            tables=[
+                "cobra.CdcBewegungen",
+                "cobra.CdcVerbuchung",
+                "cobra.CdcBewZahlArt",
+                "cobra.CdcBewBestand",
+                "cobra.CdcVerknuepfung",
+                "cobra.CdcBewegungAusl",
+                "cobra.CdcKasse",
+            ],
+            join_snippet="""\
+cobra.CdcBewegungen b
+LEFT JOIN cobra.CdcVerbuchung vb ON vb.BewegungId = b.BewegungId
+LEFT JOIN cobra.CdcBewZahlArt za ON za.BewegungId = b.BewegungId
+LEFT JOIN cobra.CdcBewBestand bb ON bb.BewegungId = b.BewegungId
+LEFT JOIN cobra.CdcVerknuepfung vk ON vk.BewegungId = b.BewegungId
+LEFT JOIN cobra.CdcBewegungAusl ba ON ba.BewegungId = b.BewegungId
+LEFT JOIN cobra.CdcKasse k ON k.KassenId = b.KassenId""",
+            date_facet="CdcBewegungen.CreateDate",
+            notes=(
+                "#40: every `*.BewegungId -> CdcBewegungen.BewegungId` edge here is 100% "
+                "verified live. `CdcKasse.KassenId` also resolves 100% but that table is 76 "
+                "columns of almost entirely POS hardware/software config -- only its "
+                "`Bezeichnung` (register display name) is carried in the schema card. "
+                "WARNING: the doc's own 现实中容易出现的问题 table claims a reversal flag "
+                "`Storno = 'J'` -- the live column is actually '0'/'1' (0 = valid, 1 = "
+                "reversed; verified 7247/7498 rows are '0'), 'J' never appears at all. "
+                "`CdcBewegungen.RechDatum` (the doc's suggested date facet) is only 37% "
+                "populated (2779/7498); `CreateDate` (98.8%, 7407/7498) is used instead. "
+                "The doc's claimed `CdcBewegungen.SollKonto`/`.HabenKonto` -> "
+                "`SKR51SachKto.KontoNummer` join essentially does not resolve (0.1%/0.3% "
+                "match) -- not included in the join_snippet above; treat those two columns "
+                "as opaque, not a safe JOIN target to SKR51SachKto."
+            ),
+        ),
+        ScopeLeaf(
+            id="FINANCE.POS_SHIFT",
+            label="Kassenschichten",
+            tables=[
+                "cobra.CdcKassenProt",
+                "cobra.CdcTagesStartEndeK",
+                "cobra.CdcTagesStartEndeP",
+                "cobra.CdcKasse",
+            ],
+            join_snippet="""\
+cobra.CdcTagesStartEndeK k
+LEFT JOIN cobra.CdcTagesStartEndeP p ON p.TAGESSTARTENDEK_ID = k.ID
+LEFT JOIN cobra.CdcKassenProt prot ON prot.KassenId = k.KassenId
+LEFT JOIN cobra.CdcKasse ks ON ks.KassenId = k.KassenId""",
+            date_facet="CdcTagesStartEndeK.CreateDate",
+            notes=(
+                "#40: `CdcTagesStartEndeP.TAGESSTARTENDEK_ID` -> `CdcTagesStartEndeK.ID` is "
+                "100% verified (5248/5248) -- but the doc's OWN worked example query in "
+                "02-finance-billing-erDiagram.md joins on `k.CID` instead, which resolves "
+                "0% (0/5248). This is the same CID-is-never-the-real-key pattern #39 found "
+                "everywhere else in this table family, just this time the doc's own example "
+                "(not only its ER diagram) gets it wrong too -- don't trust a doc-provided "
+                "worked query here any more than the ER diagram itself. `ProtArten` on "
+                "CdcKassenProt is a status/event-type code with no verified dictionary in "
+                "this candidate set."
+            ),
+        ),
+        ScopeLeaf(
+            id="FINANCE.POS_ORDERS",
+            label="Kassen-Eigenaufträge",
+            tables=[
+                "cobra.CdcAuftragK",
+                "cobra.CdcAuftragsPos",
+                "cobra.CdcAuftragsSteuer",
+                "cobra.CdcBuchKopf",
+                "cobra.CdcBuchKtoSt",
+            ],
+            join_snippet="""\
+cobra.CdcAuftragK a
+LEFT JOIN cobra.CdcAuftragsPos p ON p.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdcAuftragsSteuer st ON st.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdcBuchKopf bk ON bk.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdcBuchKtoSt bkt ON bkt.BUCHKOPF_ID = bk.ID""",
+            date_facet="CdcAuftragK.BelegDatum",
+            notes=(
+                "#40: small, self-contained mirror of the CdnAuftragK/CdnBuchKopf pattern "
+                "(#39) for POS-only direct sales (no full workshop order) -- every edge here "
+                "is 100% verified live (AUFTRAGK_ID -> CdcAuftragK.ID, BUCHKOPF_ID -> "
+                "CdcBuchKopf.ID). `CdcAuftragK.Storno` is NOT the doc's claimed 'J'/'N' flag "
+                "either -- real values are '0' (not reversed, 30/47 rows) / '1'/'2'/'3' "
+                "(17/47 rows total, different reversal states with no verified dictionary "
+                "distinguishing them)."
+            ),
+        ),
+    ],
+)
+
+
+TREES: dict[str, ScopeTree] = {
+    "LEAD": LEAD_TREE,
+    "CUSTOMER": CUSTOMER_TREE,
+    "NEWCAR": NEWCAR_TREE,
+    "FINANCE": FINANCE_TREE,
+}
 
 
 class ScopeTreeError(Exception):

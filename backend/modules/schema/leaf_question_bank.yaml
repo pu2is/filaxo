@@ -1,8 +1,9 @@
-# Per-leaf question bank for the LEAD + CUSTOMER + NEWCAR scope trees (#29, #39).
+# Per-leaf question bank for the LEAD + CUSTOMER + NEWCAR + FINANCE scope trees
+# (#29, #39, #40).
 #
 # Sources: each theme doc's "现实中容易出现的问题" table, docs/check_crm.md's 2026-07-04
 # DB-verified findings (re-verified live here -- row counts/values can drift, see
-# docs/scope-trees.md Known Gaps), and #27/#28/#39's own live-verified schema knowledge.
+# docs/scope-trees.md Known Gaps), and #27/#28/#39/#40's own live-verified schema knowledge.
 #
 # Bank != prompt (#29): only the top 2-3 "verified: true, bucket: A" entries per leaf are
 # meant to ever become a generate_sql few-shot -- the loader (#30) does that selection, not
@@ -579,6 +580,206 @@
   row_count: 1
   chart_hint: kpi
   note: "Only 11 of 38204 purchase headers are marked Verbuchung = 1 in this sample -- legitimate, verified, but a small subset; held out of few-shots for the same 'don't teach a near-zero-rate scenario as normal' reasoning as newcar_billing_errors."
+
+# --- FINANCE.OVERVIEW (#40) ---------------------------------------------------------------
+- id: finance_overview_total
+  node: FINANCE.OVERVIEW
+  bucket: A
+  question: "Wie viele Rechnungsbelege wurden insgesamt erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS BelegCount
+    FROM cobra.CdaBuchKopf
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: finance_overview_avg_amount
+  node: FINANCE.OVERVIEW
+  bucket: A
+  question: "Wie hoch ist der durchschnittliche Rechnungsbetrag?"
+  reference_sql: |
+    SELECT AVG(Betrag) AS AvgBetrag
+    FROM cobra.CdaBuchKopf
+    WHERE Betrag IS NOT NULL
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: finance_overview_status_dist
+  node: FINANCE.OVERVIEW
+  bucket: B
+  question: "Wie verteilen sich die Rechnungsbelege auf die verschiedenen Statuswerte?"
+  reference_sql: |
+    SELECT Status, COUNT(*) AS AnzahlBelege
+    FROM cobra.CdaBuchKopf
+    GROUP BY Status
+    ORDER BY AnzahlBelege DESC
+  verified: true
+  row_count: 4
+  chart_hint: bar
+  note: "Status is an unmapped code (no verified dictionary in this candidate set) -- one value ('5') covers 129801/129966 rows, heavily skewed. Held out of few-shots since a human answer can't say what any given status number actually means."
+
+# --- FINANCE.WORKSHOP_BILLING (#40) ---------------------------------------------------------
+- id: finance_billing_open_by_sollhaben
+  node: FINANCE.WORKSHOP_BILLING
+  bucket: A
+  question: "Wie hoch ist die Gesamtsumme der Soll- und Haben-Buchungen?"
+  reference_sql: |
+    SELECT SollHaben, SUM(Betrag) AS TotalAmount, COUNT(*) AS n
+    FROM cobra.CdaBuchKtoSt
+    WHERE SollHaben IS NOT NULL
+    GROUP BY SollHaben
+  verified: true
+  row_count: 2
+  chart_hint: bar
+  note: "No precomputed running-balance (Saldo) column exists on CdaBuchKtoSt (the doc's own 'overdue receivables' example query assumes one that doesn't exist live) -- this SUM(Betrag) grouped by SollHaben ('S'=Soll/debit, 'H'=Haben/credit) is the live-verified way to get an open-balance-shaped answer instead."
+
+- id: finance_billing_top_accounts
+  node: FINANCE.WORKSHOP_BILLING
+  bucket: A
+  question: "Auf welche Sachkonten werden die meisten Buchungen gebucht?"
+  reference_sql: |
+    SELECT TOP 5 sk.Bezeichnung, COUNT(*) AS AnzahlBuchungen
+    FROM cobra.CdaBuchKtoSt kt
+    JOIN cobra.SKR51SachKto sk ON sk.KontoNummer = kt.KtoNr
+    GROUP BY sk.Bezeichnung
+    ORDER BY AnzahlBuchungen DESC
+  verified: true
+  row_count: 5
+  chart_hint: bar
+
+- id: finance_billing_missing_due_date
+  node: FINANCE.WORKSHOP_BILLING
+  bucket: B
+  question: "Bei wie vielen Rechnungen fehlt das Fälligkeitsdatum?"
+  reference_sql: |
+    SELECT COUNT(*) AS MissingFaelligDatum
+    FROM cobra.CdaBuchKopf
+    WHERE FaelligDatum IS NULL
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "KNOWN GAP: FaelligDatum (due date) is only ~58% populated on CdaBuchKopf (75100/129966 have it, so ~54866 don't) -- means any 'overdue by N days' answer necessarily covers less than half the receivables ledger. Kept as a documented data-quality caveat rather than a clean aging-report few-shot; see docs/scope-trees.md Known Gaps."
+
+# --- FINANCE.POS_CASH (#40) -----------------------------------------------------------------
+- id: finance_pos_cash_total
+  node: FINANCE.POS_CASH
+  bucket: A
+  question: "Wie viele gültige Kassenbewegungen wurden insgesamt erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS ValidMovements
+    FROM cobra.CdcBewegungen
+    WHERE Storno = '0'
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "The doc's own 现实中容易出现的问题 table claims a 'Storno = J' reversal flag -- the live column is actually '0'/'1' ('0' = valid, 7247/7498 rows; '1' = reversed, 251/7498); 'J' never appears at all. A query filtering on 'J' would silently match nothing."
+
+- id: finance_pos_cash_by_zahlart
+  node: FINANCE.POS_CASH
+  bucket: A
+  question: "Wie verteilen sich die Kassenbewegungen auf die Zahlungsarten?"
+  reference_sql: |
+    SELECT TOP 5 ZahlArtId, COUNT(*) AS n, SUM(Betrag) AS TotalAmount
+    FROM cobra.CdcBewZahlArt
+    GROUP BY ZahlArtId
+    ORDER BY n DESC
+  verified: true
+  row_count: 5
+  chart_hint: bar
+  note: "ZahlArtId is an opaque code -- no payment-method dictionary is joined in this leaf (CdcZahlArten is excluded, #40, system config), so the answer groups by raw code rather than a readable label like 'Bar'/'EC-Karte'."
+
+- id: finance_pos_cash_storno_count
+  node: FINANCE.POS_CASH
+  bucket: B
+  question: "Wie viele Kassenbewegungen wurden storniert?"
+  reference_sql: |
+    SELECT COUNT(*) AS StornoCount
+    FROM cobra.CdcBewegungen
+    WHERE Storno = '1'
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "Held out for eval diversity -- small subset (251/7498, ~3.3%) alongside the bucket-A 'valid movements' question above, exercising the same Storno-code caveat from the other direction."
+
+# --- FINANCE.POS_SHIFT (#40) ----------------------------------------------------------------
+- id: finance_pos_shift_total
+  node: FINANCE.POS_SHIFT
+  bucket: A
+  question: "Wie viele Kassenschichten (Öffnen/Schließen) wurden insgesamt erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS ShiftCount
+    FROM cobra.CdcTagesStartEndeK
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: finance_pos_shift_avg_turnover
+  node: FINANCE.POS_SHIFT
+  bucket: A
+  question: "Wie hoch ist der durchschnittliche Tagesumsatz je Zahlungsart?"
+  reference_sql: |
+    SELECT AVG(UmsatzTag) AS AvgDailyTurnover
+    FROM cobra.CdcTagesStartEndeP
+    WHERE UmsatzTag IS NOT NULL
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "The doc's own worked example query for this table pair joins CdcTagesStartEndeK.CID to CdcTagesStartEndeP.TAGESSTARTENDEK_ID -- that join resolves 0% live (CID is never the real join target in this table family, #39/#40); .ID is the verified 100%-match key, used in this leaf's join_snippet instead."
+
+- id: finance_pos_shift_prot_types
+  node: FINANCE.POS_SHIFT
+  bucket: B
+  question: "Wie verteilen sich die Kassenprotokoll-Einträge auf die Ereignistypen?"
+  reference_sql: |
+    SELECT ProtArten, COUNT(*) AS n
+    FROM cobra.CdcKassenProt
+    GROUP BY ProtArten
+    ORDER BY n DESC
+  verified: true
+  row_count: 13
+  chart_hint: bar
+  note: "ProtArten is an unmapped event-type code (no verified dictionary in this candidate set) -- held out of few-shots since a human answer can't say what any given code number means (open/close/X-report/Z-report per the doc's description, but which number is which isn't verifiable here)."
+
+# --- FINANCE.POS_ORDERS (#40) ---------------------------------------------------------------
+- id: finance_pos_orders_total
+  node: FINANCE.POS_ORDERS
+  bucket: A
+  question: "Wie viele POS-Eigenaufträge wurden erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS OrderCount
+    FROM cobra.CdcAuftragK
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: finance_pos_orders_avg_positions
+  node: FINANCE.POS_ORDERS
+  bucket: A
+  question: "Wie viele Positionen hat ein POS-Eigenauftrag im Durchschnitt?"
+  reference_sql: |
+    SELECT AVG(CAST(cnt AS FLOAT)) AS AvgPositionsPerOrder
+    FROM (
+      SELECT AUFTRAGK_ID, COUNT(*) AS cnt
+      FROM cobra.CdcAuftragsPos
+      GROUP BY AUFTRAGK_ID
+    ) t
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: finance_pos_orders_storno_count
+  node: FINANCE.POS_ORDERS
+  bucket: B
+  question: "Wie viele POS-Eigenaufträge wurden storniert?"
+  reference_sql: |
+    SELECT COUNT(*) AS StornoCount
+    FROM cobra.CdcAuftragK
+    WHERE Storno != '0'
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "Storno is NOT the doc's claimed 'J'/'N' flag -- real values are '0' (not reversed, 30/47 rows) / '1'/'2'/'3' (17/47 rows total, different reversal states with no verified dictionary distinguishing them). Held out of few-shots for the small/thin subset, same reasoning as finance_pos_cash_storno_count."
 
 # --- Bucket C: out-of-scope probes (not leaf-specific) ----------------------------------
 - id: probe_weather

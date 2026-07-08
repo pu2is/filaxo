@@ -1,5 +1,5 @@
-"""Deterministic schema supply for LEAD + CUSTOMER + NEWCAR (mvp-request D2 — replaces
-vector RAG for MVP1).
+"""Deterministic schema supply for LEAD + CUSTOMER + NEWCAR + FINANCE (mvp-request D2 —
+replaces vector RAG for MVP1).
 
 Compressed DDL cards + semantic notes, assembled by get_schema_context(tables) into the
 generate_sql prompt's schema_context. All column names verified against the live DB
@@ -53,6 +53,18 @@ CdnFzgReservierung's claimed FzgStammId, CdnEinkPos's claimed FzgStammId — do 
 the live tables at all, confirmed via INFORMATION_SCHEMA.COLUMNS, not just a failed query.
 Every NEWCAR card below flags this per-table where it applies; see
 docs/scope-trees.md's NEWCAR Known Gaps for the full account.
+
+#40 extends this file with a card for every table in every FINANCE scope-tree leaf — all
+verified live on 2026-07-08, same zero-declared-FK situation as NEWCAR. The doc repeats
+#39's exact "Saldo/due-date column doesn't exist" pattern almost verbatim: CdaBuchKtoSt.
+Saldo/.FaelligDatum (its own "overdue receivables" flagship query's dependencies),
+CdaBuchKopf.RechDatum, CdcBewegungen.RechDatum (only ~37% populated in practice, CreateDate
+used instead) all don't exist or aren't reliably populated. New this time: CdcBewegungen/
+CdcAuftragK's Storno column is claimed as a 'J'/'N' flag in the doc's own problem-statement
+table but is actually '0'/'1'/'2'/'3' live ('J' never appears at all), and even the doc's
+own *worked example query* for CdcTagesStartEndeK/P joins on `.CID` — which resolves 0%
+live, the same CID-is-never-the-real-key pattern #39 found, this time in the doc's actual
+SQL sample rather than just its ER diagram.
 """
 
 _CARDS: dict[str, str] = {
@@ -637,6 +649,249 @@ CdnEkBuchKtoSt(
   KtoNr, SollHaben, Betrag DECIMAL,
   CreateDate DATETIME2
 )""",
+    # --- FINANCE tree (#40) -- verified live 2026-07-08. Same zero-declared-FK situation
+    # as NEWCAR (#39): every relationship below was verified by row-count join match rate.
+    # The doc's own "overdue receivables" flagship query and ER diagram both depend on
+    # columns that don't exist live -- flagged per-card below.
+    "cobra.CdaBuchKopf": """\
+-- cobra.CdaBuchKopf: workshop-order settlement document header, hub of the FINANCE domain
+-- WARNING: the doc's ER diagram lists a "RechDatum" column -- it does NOT exist live.
+--   Use BuchDatum (100% populated) instead.
+CdaBuchKopf(
+  CID,
+  ID,                       -- real business key, referenced by CdaBuchKtoSt/CdaBuchPos as BUCHKOPF_ID
+  AUFTRAGK_ID,              -- FK -> CdaAuftragK.ID (cross-theme, WORKSHOP, out of D5 scope)
+  AUFTRAGKSPLITT_ID,        -- FK -> workshop order-splitt (cross-theme)
+  BuchDatum DATETIME2,      -- booking date, ~100% populated -- date facet for this leaf
+  FaelligDatum DATETIME2,   -- due date, only ~58% populated (75100/129966)
+  SollHaben,                -- 'S' = Soll/debit, 'H' = Haben/credit
+  Betrag DECIMAL,
+  Status,                   -- document status code, no verified dictionary
+  Fehler INT,               -- error flag
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaBuchKtoSt": """\
+-- cobra.CdaBuchKtoSt: open-item/account-statement lines under one CdaBuchKopf (1.31M
+--   rows -- the largest table in this sample, the core of dealer receivables reconciliation)
+-- WARNING: the doc's ER diagram and its own "overdue receivables (>30/60/90 days)" example
+--   query both depend on Saldo and FaelligDatum columns on THIS table -- neither exists
+--   live. Compute an open balance as SUM(Betrag) grouped by SollHaben instead; the due
+--   date that does exist lives one level up, on CdaBuchKopf.FaelligDatum (join back via
+--   BUCHKOPF_ID) -- and that's only ~58% populated, so an "overdue" answer is necessarily
+--   partial coverage, not a complete accounts-receivable aging report.
+CdaBuchKtoSt(
+  CID,
+  BUCHKOPF_ID,       -- FK -> CdaBuchKopf.ID (100% match, 1312094/1312098)
+  AUFTRAGKSPLITT_ID, AUFTRAGSPOS_ID,  -- also link directly to the order-splitt/position level
+  KtoNr,             -- FK -> SKR51SachKto.KontoNummer (79.2% match, 1039159/1312098 -- soft-verified)
+  SollHaben,         -- 'S' = Soll/debit, 'H' = Haben/credit -- use to compute open balance
+  Betrag DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaBuchPos": """\
+-- cobra.CdaBuchPos: settlement-document line items under one CdaBuchKopf (548k rows)
+CdaBuchPos(
+  CID, ID,
+  BUCHKOPF_ID,          -- FK -> CdaBuchKopf.ID (100% match)
+  AUFTRAGKSPLITT_ID, AUFTRAGSPOS_ID,  -- also link directly to the order-splitt/position level
+  Status,               -- posting status, no verified dictionary
+  VerbuchungsKz,        -- posting marker code
+  CreateDate DATETIME2
+)""",
+    "cobra.SKR51SachKto": """\
+-- cobra.SKR51SachKto: SKR51 (Standardkontenrahmen 51 -- German automotive-dealer standard
+--   chart of accounts) master data -- the account-number-to-name dictionary
+SKR51SachKto(
+  CID,
+  KontoNummer,     -- business key, referenced by CdaBuchKtoSt.KtoNr (79.2% match)
+  Bezeichnung,     -- human-readable account name, e.g. "Lohnerlöse PKW"
+  KontoArt,        -- account-type code, no verified dictionary
+  KostenArt, KostenStelle,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcBewegungen": """\
+-- cobra.CdcBewegungen: POS cash-register transaction (one row per till movement), hub of
+--   the FINANCE.POS_CASH leaf
+-- WARNING: the doc's own 现实中容易出现的问题 table claims a "Storno = 'J'" reversal flag --
+--   the live values are '0' (valid, 7247/7498 rows) / '1' (reversed, 251/7498), 'J' never
+--   appears. WARNING: RechDatum (the doc's suggested date column) is only ~37% populated
+--   (2779/7498) -- CreateDate (~99%, 7407/7498) is used as this leaf's date facet instead.
+CdcBewegungen(
+  CID,
+  BewegungId,       -- business key, referenced by every child table below
+  KassenId,         -- FK -> CdcKasse.KassenId (100% match)
+  BewegungsArt,     -- movement-type code, no verified dictionary
+  Bediener,         -- cashier/operator name, plain text
+  KundenId,         -- FK -> BaAddress.AddressId (cross-theme, CUSTOMER, out of D5 scope)
+  Betrag DECIMAL, ZahlBetrag DECIMAL,
+  SollKonto, HabenKonto,  -- WARNING: do NOT join to SKR51SachKto.KontoNummer -- match
+                          -- rate is 0.1%/0.3%, essentially unresolvable in this sample
+  RechDatum DATETIME2,    -- only ~37% populated, see WARNING above
+  CreateDate DATETIME2,   -- ~99% populated -- this leaf's date facet
+  Storno,                 -- '0' = valid, '1' = reversed, see WARNING above
+  StornoDatum DATETIME2   -- 0% populated in this sample
+)""",
+    "cobra.CdcVerbuchung": """\
+-- cobra.CdcVerbuchung: accounting-posting entry generated from one CdcBewegungen movement
+CdcVerbuchung(
+  CID,
+  BewegungId,   -- FK -> CdcBewegungen.BewegungId (100% match)
+  KassenId,
+  SollKonto, HabenKonto,  -- same caveat as CdcBewegungen -- not a verified JOIN to SKR51SachKto
+  Betrag DECIMAL,
+  Status,       -- posting status, no verified dictionary
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcBewZahlArt": """\
+-- cobra.CdcBewZahlArt: payment-method breakdown for one CdcBewegungen movement (a single
+--   sale can be split across multiple payment methods)
+CdcBewZahlArt(
+  CID,
+  BewegungId,   -- FK -> CdcBewegungen.BewegungId (100% match)
+  ZahlArtId,    -- payment-method code -- no dictionary joined here (CdcZahlArten excluded,
+                -- #40 -- system config), group/filter on the raw code
+  Betrag DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcBewBestand": """\
+-- cobra.CdcBewBestand: cash-register balance snapshot after one CdcBewegungen movement,
+--   by register + payment method -- the basis for a "current balance" answer
+CdcBewBestand(
+  CID, ID,
+  Storno,       -- '0' = valid snapshot; filter WHERE Storno = '0' for current state
+  KassenId,     -- FK -> CdcKasse.KassenId
+  BewegungId,   -- FK -> CdcBewegungen.BewegungId (100% match)
+  ZahlArtId,    -- payment-method code, no dictionary joined here
+  Bestand DECIMAL,  -- balance amount after this movement
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcVerknuepfung": """\
+-- cobra.CdcVerknuepfung: links a POS cash movement to an external reference (a workshop
+--   order or invoice number) -- ZuAuftragsNr/ZuRechNr are plain numeric pointers, not
+--   verified FKs to any specific table in this candidate set (cross-theme, polymorphic-ish)
+CdcVerknuepfung(
+  CID,
+  BewegungId,     -- FK -> CdcBewegungen.BewegungId (100% match)
+  ZuAuftragsNr,   -- external order number, unverified cross-theme pointer
+  ZuRechNr,       -- external invoice number, unverified cross-theme pointer
+  Betrag DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcBewegungAusl": """\
+-- cobra.CdcBewegungAusl: foreign-currency add-on info for one CdcBewegungen movement (51 rows)
+CdcBewegungAusl(
+  CID,
+  BewegungId,   -- FK -> CdcBewegungen.BewegungId (100% match)
+  StornoGrund,  -- reversal-reason code, no verified dictionary
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcKasse": """\
+-- cobra.CdcKasse: cash-register master table (9 rows; 76 live columns total, almost all
+--   POS hardware/software/TSE-compliance config -- only the business-relevant subset below)
+CdcKasse(
+  CID,
+  KassenId,      -- business key, referenced by CdcBewegungen/CdcKassenProt/CdcTagesStartEndeK
+  Bezeichnung,   -- human-readable register name -- the only field worth surfacing in an answer
+  Status SMALLINT,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcKassenProt": """\
+-- cobra.CdcKassenProt: cash-register operation log (open/close/X-report/Z-report events, 19k rows)
+CdcKassenProt(
+  CID,
+  KassenId,      -- FK -> CdcKasse.KassenId (100% match)
+  Bediener,      -- operator name, plain text
+  ProtArten INT, -- event-type code, no verified dictionary
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcTagesStartEndeK": """\
+-- cobra.CdcTagesStartEndeK: daily cash-register open/close session header
+-- WARNING: the doc's own worked example query joins this table's CID column to
+--   CdcTagesStartEndeP.TAGESSTARTENDEK_ID -- that resolves 0% live. Use ID instead
+--   (100% match) -- CID is never the real join target anywhere in this table family
+--   (#39, #40).
+CdcTagesStartEndeK(
+  CID,
+  ID,               -- real business key, referenced by CdcTagesStartEndeP.TAGESSTARTENDEK_ID
+  KassenId,         -- FK -> CdcKasse.KassenId
+  StartEndeNr INT,  -- session sequence number
+  Typ,              -- open/close type code
+  Bediener,         -- operator name, plain text
+  CreateDate DATETIME2  -- ~100% populated -- this leaf's date facet
+)""",
+    "cobra.CdcTagesStartEndeP": """\
+-- cobra.CdcTagesStartEndeP: daily cash-register session lines, one row per payment method
+--   under one CdcTagesStartEndeK
+CdcTagesStartEndeP(
+  CID, ID,
+  TAGESSTARTENDEK_ID,  -- FK -> CdcTagesStartEndeK.ID (100% match, NOT .CID -- see that card)
+  ZahlArtId,           -- payment-method code, no dictionary joined here
+  BetrStart DECIMAL, BetrAct DECIMAL, BetrEnd DECIMAL,
+  UmsatzTag DECIMAL,   -- daily turnover for this payment method
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcAuftragK": """\
+-- cobra.CdcAuftragK: POS-only direct-sale order header (small sales that skip the full
+--   workshop-order flow), 47 rows -- mirrors CdnAuftragK's role (#39) but for POS
+-- WARNING: Storno is NOT the doc's claimed 'J'/'N' flag -- real values are '0' (not
+--   reversed, 30/47 rows) / '1'/'2'/'3' (17/47 rows, different reversal states with no
+--   verified dictionary distinguishing them).
+CdcAuftragK(
+  CID,
+  ID,              -- real business key, referenced by every child table below as AUFTRAGK_ID
+  KundenId,        -- FK -> BaAddress.AddressId (cross-theme, CUSTOMER, out of D5 scope)
+  KundenName,      -- plain-text customer name snapshot (denormalized, may not match BaAddress)
+  BelegDatum DATETIME2,  -- ~100% populated -- this leaf's date facet
+  BetragNetto DECIMAL, BetragBrutto DECIMAL,
+  Bediener,        -- cashier/operator name, plain text
+  Storno,          -- see WARNING above
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcAuftragsPos": """\
+-- cobra.CdcAuftragsPos: line items under one CdcAuftragK (57 live columns total, key subset below)
+CdcAuftragsPos(
+  CID, ID,
+  AUFTRAGK_ID,   -- FK -> CdcAuftragK.ID (100% match)
+  PosNr INT,
+  SachNr,        -- part/article number
+  Anzahl DECIMAL,
+  VKPreisNetto DECIMAL, VKPreisBrutto DECIMAL, EKPreis DECIMAL,
+  PosBetragNetto DECIMAL, PosBetragBrutto DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcAuftragsSteuer": """\
+-- cobra.CdcAuftragsSteuer: tax breakdown lines for one CdcAuftragK
+CdcAuftragsSteuer(
+  CID, ID,
+  AUFTRAGK_ID,   -- FK -> CdcAuftragK.ID (100% match)
+  SteuerId SMALLINT,
+  Prozent DECIMAL, Basis DECIMAL, Betrag DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcBuchKopf": """\
+-- cobra.CdcBuchKopf: settlement-document header for one CdcAuftragK (POS-side mirror of
+--   CdaBuchKopf), 34 rows
+CdcBuchKopf(
+  CID, ID,
+  AUFTRAGK_ID,   -- FK -> CdcAuftragK.ID (100% match)
+  KassenId,
+  BelegDatum DATETIME2,
+  Betrag DECIMAL,
+  Status,        -- document status, no verified dictionary
+  Fehler INT,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdcBuchKtoSt": """\
+-- cobra.CdcBuchKtoSt: open-item lines under one CdcBuchKopf (74 rows)
+CdcBuchKtoSt(
+  CID, ID,
+  BUCHKOPF_ID,   -- FK -> CdcBuchKopf.ID (100% match)
+  AUFTRAGK_ID,   -- also links directly to the order level
+  SollKonto, HabenKonto,
+  Betrag DECIMAL,
+  Status,        -- posting status, no verified dictionary
+  CreateDate DATETIME2
+)""",
 }
 
 # Structured mirror of the column lists inside _CARDS above (deliberately excludes
@@ -818,6 +1073,45 @@ _COLUMNS: dict[str, list[str]] = {
         "CID", "ID", "EKBUCHKOPF_ID", "EINKKOPF_ID", "EINKPOS_ID", "KtoNr", "SollHaben",
         "Betrag", "CreateDate",
     ],
+    # --- FINANCE tree (#40) -- Status/BewegungsArt/ProtArten/Typ/ZahlArtId-style code
+    # columns excluded, same "no verified dictionary" policy as elsewhere in this file;
+    # SollHaben/Storno are kept since their meaning is verified.
+    "cobra.CdaBuchKopf": [
+        "CID", "ID", "AUFTRAGK_ID", "BuchDatum", "FaelligDatum", "SollHaben", "Betrag", "CreateDate",
+    ],
+    "cobra.CdaBuchKtoSt": [
+        "CID", "BUCHKOPF_ID", "AUFTRAGKSPLITT_ID", "AUFTRAGSPOS_ID", "KtoNr", "SollHaben",
+        "Betrag", "CreateDate",
+    ],
+    "cobra.CdaBuchPos": ["CID", "ID", "BUCHKOPF_ID", "AUFTRAGKSPLITT_ID", "AUFTRAGSPOS_ID", "CreateDate"],
+    "cobra.SKR51SachKto": ["CID", "KontoNummer", "Bezeichnung", "KostenArt", "KostenStelle", "CreateDate"],
+    "cobra.CdcBewegungen": [
+        "CID", "BewegungId", "KassenId", "Bediener", "KundenId", "Betrag", "ZahlBetrag",
+        "RechDatum", "CreateDate", "Storno",
+    ],
+    "cobra.CdcVerbuchung": ["CID", "BewegungId", "KassenId", "Betrag", "CreateDate"],
+    "cobra.CdcBewZahlArt": ["CID", "BewegungId", "ZahlArtId", "Betrag", "CreateDate"],
+    "cobra.CdcBewBestand": ["CID", "ID", "Storno", "KassenId", "BewegungId", "ZahlArtId", "Bestand", "CreateDate"],
+    "cobra.CdcVerknuepfung": ["CID", "BewegungId", "ZuAuftragsNr", "ZuRechNr", "Betrag", "CreateDate"],
+    "cobra.CdcBewegungAusl": ["CID", "BewegungId", "CreateDate"],
+    "cobra.CdcKasse": ["CID", "KassenId", "Bezeichnung", "CreateDate"],
+    "cobra.CdcKassenProt": ["CID", "KassenId", "Bediener", "CreateDate"],
+    "cobra.CdcTagesStartEndeK": ["CID", "ID", "KassenId", "StartEndeNr", "Bediener", "CreateDate"],
+    "cobra.CdcTagesStartEndeP": [
+        "CID", "ID", "TAGESSTARTENDEK_ID", "ZahlArtId", "BetrStart", "BetrAct", "BetrEnd",
+        "UmsatzTag", "CreateDate",
+    ],
+    "cobra.CdcAuftragK": [
+        "CID", "ID", "KundenId", "KundenName", "BelegDatum", "BetragNetto", "BetragBrutto",
+        "Bediener", "Storno", "CreateDate",
+    ],
+    "cobra.CdcAuftragsPos": [
+        "CID", "ID", "AUFTRAGK_ID", "PosNr", "SachNr", "Anzahl", "VKPreisNetto", "VKPreisBrutto",
+        "EKPreis", "PosBetragNetto", "PosBetragBrutto", "CreateDate",
+    ],
+    "cobra.CdcAuftragsSteuer": ["CID", "ID", "AUFTRAGK_ID", "Prozent", "Basis", "Betrag", "CreateDate"],
+    "cobra.CdcBuchKopf": ["CID", "ID", "AUFTRAGK_ID", "KassenId", "BelegDatum", "Betrag", "CreateDate"],
+    "cobra.CdcBuchKtoSt": ["CID", "ID", "BUCHKOPF_ID", "AUFTRAGK_ID", "Betrag", "CreateDate"],
 }
 
 # Same soft-delete rule as each card's "MANDATORY FILTER" comment, structured for
