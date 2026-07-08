@@ -24,26 +24,39 @@ _TODO: demo screenshot/GIF._
 
 ## Getting Started
 
-### Dev Environment (Docker: Ollama + SQL Server)
+### 0. Prerequisite: unpack the sample database
 
-Brings up a local SQL Server 2022 instance restored from the sample `FilaksOne.bak`, plus an Ollama instance with `qwen2.5-coder:7b` pulled — everything the backend needs to run against locally.
+The challenge provides the sample database as `FilaksOne.zip` (git-ignored, ~9.3GB uncompressed — never committed). Extract it into the project root **before** running anything, so that this exact path exists:
 
-**Prerequisites:** Docker Desktop running, and `FilaksOne/FilaksOne.bak` present locally (see [Database Connection](#) in project docs — the file is git-ignored and must be supplied separately).
+```
+FilaksOne/FilaksOne.bak
+```
+
+If you skip this, `docker compose up` fails within seconds with a `[preflight]` error telling you to do this — it won't silently proceed or hang on a half-broken restore.
+
+### 1. One-command full stack (Docker: SQL Server + Ollama + backend + frontend)
+
+The simplest way to see the app running — no local Python/Node toolchain needed:
 
 ```bash
 # CPU only (default)
-docker compose up -d
+docker compose up -d --build
 
 # With NVIDIA GPU acceleration for Ollama
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 ```
 
-This starts these services:
+Dev environment tested with an **NVIDIA GeForce RTX 3070 (8GB VRAM)** — `qwen2.5-coder:7b` fits comfortably within that. GPU mode requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed on the host; without it, `-f docker-compose.gpu.yml` will fail to start `ollama`.
+
+Open **http://localhost:8080** once it's up (first run takes a few minutes: DB restore + pulling the 7B model). This starts:
+- `preflight` — fails fast with a clear message if `FilaksOne/FilaksOne.bak` is missing (see step 0)
 - `sqlserver` — SQL Server 2022 on `localhost,14330` (`sa` / `Filaks!Pass2026`, admin — used for restore only)
 - `db-init` — runs once, restores `FilaksOne` from the mounted `.bak` if it doesn't already exist, then exits
 - `db-readonly-init` — runs once after `db-init`, creates the `filaks_readonly` login/user (see below), then exits
 - `ollama` — Ollama API on `localhost:11434`
 - `ollama-init` — runs once, pulls `qwen2.5-coder:7b`, then exits
+- `backend` — FastAPI on `localhost:8000` (built from [`backend/Dockerfile`](backend/Dockerfile); waits for the DB/model init steps above)
+- `frontend` — the built Vue SPA served by nginx on `localhost:8080` (built from [`frontend/Dockerfile`](frontend/Dockerfile); waits for `backend`)
 
 **Verify it worked:**
 
@@ -53,9 +66,20 @@ docker compose exec ollama ollama list
 
 # Database is restored and queryable from the host (admin login)
 sqlcmd -S localhost,14330 -U sa -P "Filaks!Pass2026" -C -Q "SELECT COUNT(*) FROM sys.tables"
+
+# Backend is up
+curl http://localhost:8000/health   # {"status":"ok"}
 ```
 
 Re-running `docker compose up` is safe — `db-init` checks whether `FilaksOne` already exists before restoring, `db-readonly-init` checks whether the login/user already exist, and `ollama pull` is a no-op if the model is already present.
+
+### 2. Native dev (Docker: SQL Server + Ollama only)
+
+For active development with hot-reload, run just the infra in Docker and the backend/frontend natively — see [Backend](#backend) and [Frontend](#frontend) below. Bring up only the infra services:
+
+```bash
+docker compose up -d sqlserver db-init db-readonly-init ollama ollama-init
+```
 
 ### Application Database Login (Read-Only)
 
@@ -137,6 +161,7 @@ Toy 3-node `StateGraph` (`generate_sql` → `validate_sql` → `finish`) with a 
 ```
 backend/
 ├── main.py                    FastAPI app entrypoint
+├── Dockerfile                 Python 3.12 + ODBC Driver 18, serves on :8000
 ├── modules/
 │   ├── chat/
 │   │   ├── router.py          POST /api/chat (single endpoint for every action)
@@ -156,15 +181,17 @@ backend/
 ├── scripts/eval_query.py      AI core eval harness (see AI Core Eval above)
 └── spikes/                    LangGraph POC
 frontend/                Vue 3 + Vite + Tailwind + shadcn-vue SPA
+├── Dockerfile                 Multi-stage: npm build → served by nginx on :80
+├── nginx.conf                 SPA fallback (try_files -> index.html)
 ├── src/features/chat/         Chat UI: components + Pinia store (stores/chat.store.ts) + contract types
 ├── src/features/{result,dashboard,traceability}/   Later goals (placeholders)
 └── src/shared/api/            Typed fetch client for the /api/chat contract
 docker/                  create-readonly-user.sql (read-only DB login, run by db-readonly-init)
 scripts/                 DB restore (restore-db.sh/.sql) + LLM smoke test (smoke_test_llm.py)
-docker-compose.yml       Local dev environment (SQL Server + Ollama)
-docker-compose.gpu.yml   Optional GPU overlay for Ollama (see Dev Environment above)
+docker-compose.yml       Local dev environment: preflight, SQL Server, Ollama, backend, frontend
+docker-compose.gpu.yml   Optional GPU overlay for Ollama (see Getting Started above)
 .env.example             Backend config template (DB + LLM connection settings)
-FilaksOne/               Local sample database backup (git-ignored)
+FilaksOne/               Local sample database backup (git-ignored — extract FilaksOne.zip here, see Getting Started step 0)
 docs/                    Design docs and database domain documentation (git-ignored, WIP)
 ```
 

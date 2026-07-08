@@ -1,8 +1,36 @@
 services:
+  # Fails fast (seconds, not the ~60s sqlserver start_period) with an actionable
+  # message if the challenge's FilaksOne.zip hasn't been extracted into the repo
+  # root yet -- without this, a missing .bak turns into an empty bind-mounted
+  # directory and a cryptic RESTORE error deep inside db-init instead.
+  preflight:
+    image: alpine:3.20
+    volumes:
+      - ./FilaksOne:/FilaksOne:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ ! -f /FilaksOne/FilaksOne.bak ]; then
+          echo "";
+          echo "[preflight] FilaksOne/FilaksOne.bak not found.";
+          echo "[preflight] Extract the challenge's FilaksOne.zip into the project root";
+          echo "[preflight] (next to this docker-compose.yml) so that";
+          echo "[preflight]   ./FilaksOne/FilaksOne.bak";
+          echo "[preflight] exists, then rerun: docker compose up -d";
+          echo "";
+          exit 1;
+        fi
+        echo "[preflight] FilaksOne.bak found, continuing."
+    restart: "no"
+
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     container_name: filaks-mssql
     restart: unless-stopped
+    depends_on:
+      preflight:
+        condition: service_completed_successfully
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "Filaks!Pass2026"
@@ -76,6 +104,46 @@ services:
     # so retry a few times instead of failing on the first race.
     entrypoint: ["/bin/sh", "-c", "for i in $(seq 1 10); do ollama pull qwen2.5-coder:7b && exit 0; echo 'retrying in 3s...'; sleep 3; done; exit 1"]
     restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+    container_name: filaks-backend
+    restart: unless-stopped
+    depends_on:
+      db-readonly-init:
+        condition: service_completed_successfully
+      ollama-init:
+        condition: service_completed_successfully
+    environment:
+      # Container-network hostnames (sqlserver/ollama), not the host-mapped
+      # localhost ports used by backend/.env for native (non-docker) dev.
+      DB_SERVER: "sqlserver"
+      DB_NAME: "FilaksOne"
+      DB_USER: "filaks_readonly"
+      DB_PASSWORD: "Filaks!ReadOnly2026"
+      DB_DRIVER: "ODBC Driver 18 for SQL Server"
+      OLLAMA_HOST: "http://ollama:11434"
+      OLLAMA_MODEL: "qwen2.5-coder:7b"
+      CORS_ORIGINS: '["http://localhost:8080","http://127.0.0.1:8080"]'
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the built JS bundle at image-build time (Vite envs are
+        # compile-time) -- must be the host-published backend port, since it's
+        # the browser (not another container) that calls this URL.
+        VITE_API_BASE_URL: "http://localhost:8000"
+    container_name: filaks-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
 
 volumes:
   mssql-data:
