@@ -1,5 +1,5 @@
-"""Deterministic schema supply for LEAD + CUSTOMER + NEWCAR + FINANCE (mvp-request D2 —
-replaces vector RAG for MVP1).
+"""Deterministic schema supply for LEAD + CUSTOMER + NEWCAR + FINANCE + WORKSHOP
+(mvp-request D2 — replaces vector RAG for MVP1).
 
 Compressed DDL cards + semantic notes, assembled by get_schema_context(tables) into the
 generate_sql prompt's schema_context. All column names verified against the live DB
@@ -65,6 +65,19 @@ table but is actually '0'/'1'/'2'/'3' live ('J' never appears at all), and even 
 own *worked example query* for CdcTagesStartEndeK/P joins on `.CID` — which resolves 0%
 live, the same CID-is-never-the-real-key pattern #39 found, this time in the doc's actual
 SQL sample rather than just its ER diagram.
+
+#41 extends this file with a card for every table in every WORKSHOP scope-tree leaf — all
+verified live on 2026-07-08. Same zero-declared-FK situation as NEWCAR/FINANCE, and the
+same "doc's own worked example query is wrong" pattern (#40) repeats: the doc's own
+"most-used standard labor items" example query joins CdaAuftragsPos.ApoId to CdaApo.ApoId
+— that column does not exist on CdaAuftragsPos at all, and its only plausible substitute
+(SachNr) matches 0/641188 CdaApo.ApoId values, so labor-catalog usage frequency cannot be
+computed from this sample. This pass also surfaced a NEW kind of drift, distinct from
+"column doesn't exist": CdaAuftragK.RepBeginn/.RepEnde/.Annahme/.WerkstattFertig/
+.FzgAbholDatum all exist exactly as documented, with exactly the names and types the ER
+diagram claims, but are ~99%+ NULL in this sample — the doc's own flagship "unclosed
+orders"/"repair cycle time" problems depend on columns that are present but essentially
+unpopulated, not missing.
 """
 
 _CARDS: dict[str, str] = {
@@ -892,6 +905,239 @@ CdcBuchKtoSt(
   Status,        -- posting status, no verified dictionary
   CreateDate DATETIME2
 )""",
+    # --- WORKSHOP tree (#41) -- verified live 2026-07-08. Same zero-declared-FK
+    # situation as NEWCAR/FINANCE. New drift kind found here: several columns exist
+    # exactly as documented but are ~99%+ NULL in this sample (not missing, just empty) --
+    # flagged per-card below where it applies.
+    "cobra.CdaAuftragK": """\
+-- cobra.CdaAuftragK: workshop order header, hub of the WORKSHOP domain (133k rows)
+--   (106 live columns total, key subset below)
+-- WARNING: RepBeginn/RepEnde/Annahme/WerkstattFertig/FzgAbholDatum all exist exactly as
+--   documented but are ~99%+ NULL in this sample (RepBeginn 1408/133681, RepEnde
+--   4/133681) -- the doc's own "unclosed orders"/"repair cycle time" flagship questions
+--   cannot be meaningfully answered from this data. Use AuftragsDatum instead.
+-- WARNING: Geloescht is '0'/'1' (127805/133681 are '0'), NOT the 'J' the doc's own
+--   problem-statement table implies.
+CdaAuftragK(
+  CID,
+  ID,                       -- real business key, referenced by every child table as AUFTRAGK_ID
+  AuftragsId INT,           -- human-facing order number, also used by CdaAuftragsPosMont (excluded)
+  KundenId,                 -- FK -> BaAddress.AddressId (cross-theme, CUSTOMER, out of D5 scope)
+  FzgStammId,               -- FK -> CdvFzgStamm.CID (cross-theme, VEHICLE, out of D5 scope)
+  KundenBeraterId,          -- service advisor identifier
+  AuftragsDatum DATETIME2,  -- order date, ~100% populated -- this leaf's date facet
+  Termin DATETIME2,         -- scheduled appointment, ~88% populated
+  RepBeginn DATETIME2, RepEnde DATETIME2,  -- repair start/end -- ~1%/~0.003% populated, see WARNING
+  Marke, Typ, ModellBez,    -- brand/type/model, plain text
+  FahrgestellNr,            -- VIN
+  AmtlKennz,                -- license plate
+  KmStand INT,
+  NwGwWerkstattKost DECIMAL,  -- workshop cost portion of the order
+  Geloescht,                -- '0'/'1' soft-delete flag, see WARNING
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaAuftragsPos": """\
+-- cobra.CdaAuftragsPos: order line items (labor + parts + fees), 740k rows -- 130 live
+--   columns total, key subset below
+-- WARNING: the doc's ER diagram and its own "most-used standard labor items" flagship
+--   query both claim an ApoId column joining to CdaApo -- this column does NOT exist
+--   live at all, and SachNr (the only other candidate) matches 0/641188 CdaApo.ApoId
+--   values. There is no verifiable way to link a line item back to a standard labor
+--   catalog entry in this sample -- see WORKSHOP.LABOR_CATALOG's notes.
+CdaAuftragsPos(
+  CID, ID,
+  AUFTRAGK_ID,          -- FK -> CdaAuftragK.ID (100% match)
+  AUFTRAGKSPLITT_ID,    -- FK -> CdaAuftragKSplitt.ID (100% match)
+  AUFTRAGSJOB_ID,       -- FK -> CdaAuftragsJob.ID (99.9% match)
+  PosNr INT,
+  PosArtId,             -- line-type code, no verified dictionary
+  SachNr,               -- FK -> CdmArtikel.EtNr (cross-theme, PARTS, out of D5 scope) --
+                        -- NOT a link to CdaApo, see WARNING above
+  JobId,                -- diagnostic-job business code (not the same as AUFTRAGSJOB_ID)
+  Anzahl DECIMAL,
+  ZeitOrg DECIMAL, ZeitBer DECIMAL,  -- original vs. billed labor hours
+  VerrechSatzNr,        -- FK -> CdaVerrechSatz.VerrechSatzNr (100% match)
+  VKPreis DECIMAL, EKPreis DECIMAL, RabProz DECIMAL, PosBetrag DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaAuftragKSplitt": """\
+-- cobra.CdaAuftragKSplitt: billing/payment split for one CdaAuftragK -- also carries a
+--   full duplicate copy of the customer's invoice address (legacy print-layout
+--   pattern), omitted below for token budget (~90 of its 150 live columns are
+--   Rech*/address fields, same pattern as NEWCAR's CdnAuftragKSplitt)
+CdaAuftragKSplitt(
+  CID, ID,
+  AUFTRAGK_ID,     -- FK -> CdaAuftragK.ID (100% match)
+  KundenId,        -- FK -> BaAddress.AddressId (cross-theme)
+  Status INT,      -- split/payment status code, no verified dictionary
+  RechNr INT, RechDatum DATETIME2, FaelligDatum DATETIME2,
+  BetragNetto DECIMAL, BetragBrutto DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaAuftragSperre": """\
+-- cobra.CdaAuftragSperre: order lock/unlock EVENT LOG -- NOT a "currently locked" flag
+--   table (same pattern as NEWCAR's CdnAuftragSperre, #39)
+-- WARNING: SperrKz = '1' means locked, '0' means released -- 9220 of 9226 rows are '0'
+--   (release events); filter WHERE SperrKz = 1 for current state (4 rows).
+CdaAuftragSperre(
+  CID,
+  AUFTRAGK_ID,   -- FK -> CdaAuftragK.ID (100% match)
+  SperrArt,      -- lock-type code, no verified dictionary
+  SperrKz,       -- '1' = locked, '0' = released, see WARNING
+  Benutzer, Zeit DATETIME2
+)""",
+    "cobra.CdaAuftragsSteuer": """\
+-- cobra.CdaAuftragsSteuer: tax breakdown lines for one CdaAuftragKSplitt
+CdaAuftragsSteuer(
+  CID, ID,
+  AUFTRAGKSPLITT_ID,   -- FK -> CdaAuftragKSplitt.ID (99.9% match -- NOT CdaAuftragK directly)
+  SteuerId SMALLINT,
+  Prozent DECIMAL, Basis DECIMAL, Betrag DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaAuftragWiAd": """\
+-- cobra.CdaAuftragWiAd: WiAd (Werkstatt Informations Dienst) OEM interface sync status
+--   for one CdaAuftragK (112k rows) -- tracks data-sync timestamps/state with the
+--   manufacturer's system (e.g. FCA/Stellantis), not a business-content table
+CdaAuftragWiAd(
+  CID,
+  AUFTRAGK_ID,          -- FK -> CdaAuftragK.ID (99.9% match)
+  RepairOrderStatus,    -- sync status code, no verified dictionary
+  SyncFailed BIT,
+  SyncInDate DATETIME2, SyncOutDate DATETIME2,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaAuftragsJob": """\
+-- cobra.CdaAuftragsJob: diagnostic work-package/job unit under one CdaAuftragK (16k
+--   rows) -- one row per fault-description unit (customer complaint, cause, fix)
+CdaAuftragsJob(
+  CID, ID,
+  AUFTRAGK_ID,      -- FK -> CdaAuftragK.ID (99.7% match)
+  JobId,            -- job business code
+  JobArt,           -- job-type code, no verified dictionary
+  Beanstandung,     -- customer complaint, plain text
+  JobSchaden,       -- damage description, plain text
+  DjcTextUrsache,   -- root-cause text (image/ntext column)
+  DjcTextLoesung,   -- fix description (image/ntext column)
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaAuftragsStGrp": """\
+-- cobra.CdaAuftragsStGrp: tax-rate-group assignment for one CdaAuftragK (14 rows --
+--   thin, but a real 1:1-ish extension of the order header)
+CdaAuftragsStGrp(
+  CID,
+  AUFTRAGK_ID,   -- FK -> CdaAuftragK.ID (100% match)
+  StGrp INT,     -- tax-rate-group code, no verified dictionary
+  Bezeichnung,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaFIGaKopf": """\
+-- cobra.CdaFIGaKopf: workshop-side warranty-claim application header (18k rows)
+-- WARNING: the doc's ER diagram claims an AUFTRAGK_ID column linking directly to
+--   CdaAuftragK -- the real column is AUFTRAGKSPLITT_ID, one level down (99.9% match
+--   to CdaAuftragKSplitt.ID; 0% match if tested directly against CdaAuftragK). Also:
+--   the doc/CLAUDE.md's claimed GaArt column (cross-theme FK to warranty theme's
+--   CdwFIGwArt.GarArt, #44) does not exist on this table -- see module notes/
+--   scope_tree.py's WORKSHOP.WARRANTY_CLAIMS leaf for the full account.
+CdaFIGaKopf(
+  CID,
+  ID,                    -- real business key, referenced by CdaFIGaFall.FIGAKOPF_ID
+  AUFTRAGKSPLITT_ID,     -- FK -> CdaAuftragKSplitt.ID (99.9% match), see WARNING
+  AntragsDatum DATETIME2,  -- claim application date, ~94% populated -- this leaf's date facet
+  FahrgestellNr,         -- VIN
+  RepBeginn DATETIME2, RepEnde DATETIME2,
+  ZahlGesamt DECIMAL,    -- total claim amount
+  ZahlGesamtNetto DECIMAL,
+  Status INT,            -- claim status code, no verified dictionary
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaFIGaFall": """\
+-- cobra.CdaFIGaFall: warranty-claim case detail lines under one CdaFIGaKopf (28k rows)
+-- WARNING: the doc's ER diagram claims this table joins to CdaFIGaKopf via FallNr --
+--   FallNr is actually CdaFIGaFall's OWN identifier column, not a column CdaFIGaKopf
+--   has. The real FK is FIGAKOPF_ID -> CdaFIGaKopf.ID (100% match, 28262/28273).
+CdaFIGaFall(
+  CID,
+  ID,
+  FIGAKOPF_ID,      -- FK -> CdaFIGaKopf.ID (100% match), NOT FallNr -- see WARNING
+  FallNr,           -- this table's own case-number identifier, not a FK
+  SchadCodeKurz, SchadensBeschr, SchadensText,  -- damage code/description, plain text
+  Ursache, UrsacheText,   -- root-cause code/text
+  Bewertung INT,          -- assessment/rating code, no verified dictionary
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaPaketKopf": """\
+-- cobra.CdaPaketKopf: repair-package catalog header (predefined bundled service
+--   offerings -- labor + parts + discount), 1.4k rows
+CdaPaketKopf(
+  CID,
+  ID,               -- business key, referenced by CdaPaketPos.PaketKopf_ID
+  Marke,            -- brand this package applies to, plain text
+  Bezeichnung,      -- package name
+  PreisPaket DECIMAL,  -- bundled package price
+  Marge DECIMAL,
+  GueltigAb DATETIME2, GueltigBis DATETIME2,  -- validity date range (catalog, not a transaction date)
+  CreateDate DATETIME2  -- this leaf's date facet (validity range isn't a creation/transaction date)
+)""",
+    "cobra.CdaPaketPos": """\
+-- cobra.CdaPaketPos: repair-package line items (labor + parts) under one CdaPaketKopf (4.5k rows)
+CdaPaketPos(
+  CID, ID,
+  PaketKopf_ID,     -- FK -> CdaPaketKopf.ID (100% match)
+  SachNr,           -- FK -> CdmArtikel.EtNr (cross-theme, PARTS, out of D5 scope)
+  VerrechSatzNr,    -- FK -> CdaVerrechSatz.VerrechSatzNr (75.1% match -- soft-verified)
+  PosBezeichnung,
+  Anzahl DECIMAL, VKPreis DECIMAL, EKPreis DECIMAL, PosBetrag DECIMAL,
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaVerrechSatz": """\
+-- cobra.CdaVerrechSatz: labor billing-rate master data (2.6k rows) -- one row per
+--   rate-group + tier combination
+-- NOTE: 8 of the 11 CdaVerrechSatzGrup groups share an identical rate schedule
+--   (verified live) -- see WORKSHOP.PACKAGES leaf notes before building a
+--   "rate by brand/group" comparison question.
+CdaVerrechSatz(
+  CID,
+  VerrechSatzGrupId,   -- FK -> CdaVerrechSatzGrup.VerrechSatzGrupId (90.9% match)
+  Staffel,             -- rate tier code
+  VerrechSatzNr,       -- business key, referenced by CdaAuftragsPos/CdaPaketPos.VerrechSatzNr
+  VerrechnungsSatz DECIMAL,  -- hourly rate
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaVerrechSatzGrup": """\
+-- cobra.CdaVerrechSatzGrup: billing-rate group dictionary (11 rows) -- mostly brand
+--   names (e.g. "Fiat PKW", "Alfa Romeo", "Lancia")
+CdaVerrechSatzGrup(
+  VerrechSatzGrupId,   -- business key, referenced by CdaVerrechSatz.VerrechSatzGrupId
+  Bezeichnung,         -- human-readable group name
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaApo": """\
+-- cobra.CdaApo: standard labor-time catalog (16.9k rows) -- reference data only, NOT
+--   joined to actual order usage (see WARNING on CdaAuftragsPos's card)
+-- WARNING: Zeit (standard time) and Preis (standard price) are both 0 for ~99.7% of
+--   rows (16879/16929 have Zeit = 0; 16884/16929 have Preis = 0) -- most catalog
+--   entries are placeholder/inactive; an "average standard time/price" answer would
+--   be dominated by these zeros. This table also has no CID column (ApoId is the only key).
+CdaApo(
+  ApoId,          -- business key, referenced by CdaFIApoZusatz.ApoId
+  RzKz,           -- manufacturer/brand code
+  APONr,          -- standard-time catalog number
+  Bezeichnung,    -- labor item description
+  Zeit DECIMAL,   -- standard time, see WARNING
+  Preis DECIMAL,  -- standard price, see WARNING
+  VerrechSatzNr,  -- FK -> CdaVerrechSatz.VerrechSatzNr (not verified in this pass)
+  CreateDate DATETIME2
+)""",
+    "cobra.CdaFIApoZusatz": """\
+-- cobra.CdaFIApoZusatz: additional classification flags for one CdaApo entry (17k
+--   rows) -- used for warranty-claim labor-time validation
+CdaFIApoZusatz(
+  ApoId,        -- FK -> CdaApo.ApoId (100% match)
+  ApoKlasse,    -- classification code, no verified dictionary
+  ApoArt,       -- type code, no verified dictionary
+  ApoNrKurz
+)""",
 }
 
 # Structured mirror of the column lists inside _CARDS above (deliberately excludes
@@ -1112,6 +1358,52 @@ _COLUMNS: dict[str, list[str]] = {
     "cobra.CdcAuftragsSteuer": ["CID", "ID", "AUFTRAGK_ID", "Prozent", "Basis", "Betrag", "CreateDate"],
     "cobra.CdcBuchKopf": ["CID", "ID", "AUFTRAGK_ID", "KassenId", "BelegDatum", "Betrag", "CreateDate"],
     "cobra.CdcBuchKtoSt": ["CID", "ID", "BUCHKOPF_ID", "AUFTRAGK_ID", "Betrag", "CreateDate"],
+    # --- WORKSHOP tree (#41) -- PosArtId/JobArt/ApoKlasse/ApoArt-style code columns
+    # excluded, same "no verified dictionary" policy as elsewhere; SperrKz kept since
+    # its two-value meaning is verified. Geloescht kept -- its '0'/'1' meaning is
+    # verified even though it's not the doc's claimed 'J' encoding.
+    "cobra.CdaAuftragK": [
+        "CID", "ID", "AuftragsId", "KundenId", "FzgStammId", "KundenBeraterId", "AuftragsDatum",
+        "Termin", "Marke", "Typ", "ModellBez", "FahrgestellNr", "AmtlKennz", "KmStand",
+        "NwGwWerkstattKost", "Geloescht", "CreateDate",
+    ],
+    "cobra.CdaAuftragsPos": [
+        "CID", "ID", "AUFTRAGK_ID", "AUFTRAGKSPLITT_ID", "AUFTRAGSJOB_ID", "PosNr", "SachNr",
+        "JobId", "Anzahl", "ZeitOrg", "ZeitBer", "VerrechSatzNr", "VKPreis", "EKPreis",
+        "RabProz", "PosBetrag", "CreateDate",
+    ],
+    "cobra.CdaAuftragKSplitt": [
+        "CID", "ID", "AUFTRAGK_ID", "KundenId", "RechNr", "RechDatum", "FaelligDatum",
+        "BetragNetto", "BetragBrutto", "CreateDate",
+    ],
+    "cobra.CdaAuftragSperre": ["CID", "AUFTRAGK_ID", "SperrKz", "Benutzer", "Zeit"],
+    "cobra.CdaAuftragsSteuer": ["CID", "ID", "AUFTRAGKSPLITT_ID", "Prozent", "Basis", "Betrag", "CreateDate"],
+    "cobra.CdaAuftragWiAd": ["CID", "AUFTRAGK_ID", "SyncFailed", "SyncInDate", "SyncOutDate", "CreateDate"],
+    "cobra.CdaAuftragsJob": [
+        "CID", "ID", "AUFTRAGK_ID", "JobId", "Beanstandung", "JobSchaden", "CreateDate",
+    ],
+    "cobra.CdaAuftragsStGrp": ["CID", "AUFTRAGK_ID", "Bezeichnung", "CreateDate"],
+    "cobra.CdaFIGaKopf": [
+        "CID", "ID", "AUFTRAGKSPLITT_ID", "AntragsDatum", "FahrgestellNr", "ZahlGesamt",
+        "ZahlGesamtNetto", "CreateDate",
+    ],
+    "cobra.CdaFIGaFall": [
+        "CID", "ID", "FIGAKOPF_ID", "FallNr", "SchadCodeKurz", "SchadensBeschr", "SchadensText",
+        "Ursache", "UrsacheText", "CreateDate",
+    ],
+    "cobra.CdaPaketKopf": [
+        "CID", "ID", "Marke", "Bezeichnung", "PreisPaket", "Marge", "GueltigAb", "GueltigBis", "CreateDate",
+    ],
+    "cobra.CdaPaketPos": [
+        "CID", "ID", "PaketKopf_ID", "SachNr", "VerrechSatzNr", "PosBezeichnung", "Anzahl",
+        "VKPreis", "EKPreis", "PosBetrag", "CreateDate",
+    ],
+    "cobra.CdaVerrechSatz": [
+        "CID", "VerrechSatzGrupId", "Staffel", "VerrechSatzNr", "VerrechnungsSatz", "CreateDate",
+    ],
+    "cobra.CdaVerrechSatzGrup": ["VerrechSatzGrupId", "Bezeichnung", "CreateDate"],
+    "cobra.CdaApo": ["ApoId", "RzKz", "APONr", "Bezeichnung", "Zeit", "Preis", "VerrechSatzNr", "CreateDate"],
+    "cobra.CdaFIApoZusatz": ["ApoId", "ApoNrKurz"],
 }
 
 # Same soft-delete rule as each card's "MANDATORY FILTER" comment, structured for

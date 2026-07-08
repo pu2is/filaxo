@@ -1,8 +1,8 @@
-"""LEAD + CUSTOMER + NEWCAR + FINANCE scope trees (#27, #39, #40): thema -> leaf, each
-leaf a fixed table set + JOIN snippet + time facet. This is the D5 scope tree in its
-multi-theme form -- thema -> leaf, i.e. depth 2 of the max-3-level design (no
-sub-sub-thema needed yet for any of these themas); consumed by the tree-walking funnel
-(chat/service.py, #31).
+"""LEAD + CUSTOMER + NEWCAR + FINANCE + WORKSHOP scope trees (#27, #39, #40, #41):
+thema -> leaf, each leaf a fixed table set + JOIN snippet + time facet. This is the D5
+scope tree in its multi-theme form -- thema -> leaf, i.e. depth 2 of the max-3-level
+design (no sub-sub-thema needed yet for any of these themas); consumed by the
+tree-walking funnel (chat/service.py, #31).
 
 Every leaf's table set and JOIN snippet was verified against the live DB
 (localhost,14330) on 2026-07-07, not just against the docs/0*-*-erDiagram.md text --
@@ -36,6 +36,15 @@ shape is built from). Load-bearing corrections from those passes:
   join target anywhere across three separate legacy table families (Ba*/Cdi*, Cdn*,
   Cda*/Cdc*) -- treat any future doc in this style the same way: verify the business-ID
   column empirically, never trust `CID` just because an ER block marks it `PK`.
+- The 03-workshop-service doc (#41) adds a new drift KIND, distinct from "column
+  doesn't exist": several columns exist exactly as documented but are almost entirely
+  NULL in this sample. `CdaAuftragK.RepBeginn`/`.RepEnde` (the doc's own "unclosed
+  orders"/"repair cycle time" flagship problems) are ~1%/~0.003% populated;
+  `.Annahme`/`.WerkstattFertig`/`.FzgAbholDatum` are similarly near-total-NULL.
+  `AuftragsDatum` (order date) is the only reliably-populated date column on this hub
+  table. Also: `CdaAuftragsPos` has no `ApoId` column live despite being the doc's own
+  flagship "most-used standard labor item" example query's join key -- see
+  WORKSHOP.LABOR_CATALOG's notes.
 """
 
 from dataclasses import dataclass
@@ -523,11 +532,165 @@ LEFT JOIN cobra.CdcBuchKtoSt bkt ON bkt.BUCHKOPF_ID = bk.ID""",
 )
 
 
+WORKSHOP_TREE = ScopeTree(
+    thema="WORKSHOP",
+    label="Werkstatt & Service",
+    doc_ref="docs/03-workshop-service-erDiagram.md",
+    leaves=[
+        ScopeLeaf(
+            id="WORKSHOP.OVERVIEW",
+            label="Überblick",
+            tables=["cobra.CdaAuftragK"],
+            join_snippet=None,
+            date_facet="CdaAuftragK.AuftragsDatum",
+            notes=(
+                "Whole-thema catch-all leaf. #41: same zero-declared-FK situation as "
+                "NEWCAR/FINANCE (#39/#40). `Geloescht` IS a real column here (unlike "
+                "CdnAuftragK, #39) but its values are '0'/'1' (127805/133681 are '0'), NOT "
+                "the doc's own problem-statement table's implied `'J'` -- same drift pattern "
+                "already found on `Storno` in FINANCE (#40)."
+            ),
+        ),
+        ScopeLeaf(
+            id="WORKSHOP.ORDER",
+            label="Auftragsabwicklung",
+            tables=[
+                "cobra.CdaAuftragK",
+                "cobra.CdaAuftragsPos",
+                "cobra.CdaAuftragKSplitt",
+                "cobra.CdaAuftragSperre",
+                "cobra.CdaAuftragsSteuer",
+                "cobra.CdaAuftragWiAd",
+                "cobra.CdaAuftragsJob",
+                "cobra.CdaAuftragsStGrp",
+            ],
+            join_snippet="""\
+cobra.CdaAuftragK a
+LEFT JOIN cobra.CdaAuftragsPos p ON p.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdaAuftragKSplitt s ON s.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdaAuftragSperre sp ON sp.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdaAuftragsSteuer st ON st.AUFTRAGKSPLITT_ID = s.ID
+LEFT JOIN cobra.CdaAuftragWiAd wa ON wa.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdaAuftragsJob j ON j.AUFTRAGK_ID = a.ID
+LEFT JOIN cobra.CdaAuftragsStGrp stg ON stg.AUFTRAGK_ID = a.ID""",
+            date_facet="CdaAuftragK.AuftragsDatum",
+            notes=(
+                "#41: all seven child edges verified 99.7-100% live against "
+                "`CdaAuftragK.ID` (AUFTRAGK_ID) or `CdaAuftragKSplitt.ID` "
+                "(AUFTRAGKSPLITT_ID, for CdaAuftragsSteuer only -- one level down, same "
+                "pattern as NEWCAR/FINANCE's *Steuer tables). WARNING: this doc's own "
+                "flagship problems ('工单未关闭'/unclosed orders, average repair-cycle time) "
+                "both depend on `RepBeginn`/`RepEnde` -- these columns exist exactly as "
+                "documented, but are essentially unpopulated in this sample: RepBeginn is "
+                "1408/133681 (~1%), RepEnde is 4/133681 (~0.003%), and every other "
+                "workshop-workflow timestamp (`Annahme`, `WerkstattFertig`, "
+                "`FzgAbholDatum`) is similarly near-total-NULL (153, 2, and 0 populated "
+                "rows respectively). Only `AuftragsDatum` (order-creation date, "
+                "99.998% populated) and `Termin` (scheduled appointment, ~88%) have real "
+                "coverage -- `AuftragsDatum` is used as this leaf's date facet; do not "
+                "build a 'how long did the repair take' or 'which orders are still open' "
+                "answer from RepBeginn/RepEnde, the data to answer it barely exists in "
+                "this sample. `CdaAuftragsPosMont` (171k rows, doc's claimed "
+                "'installation/assembly line items') is excluded from this leaf -- it has "
+                "no `AUFTRAGK_ID` column at all live (only `AuftragsId` INT, a soft 99.7% "
+                "match to `CdaAuftragK.AuftragsId` rather than the clean varchar-`ID` "
+                "pattern used everywhere else in this tree)."
+            ),
+        ),
+        ScopeLeaf(
+            id="WORKSHOP.WARRANTY_CLAIMS",
+            label="Garantieanträge",
+            tables=["cobra.CdaFIGaKopf", "cobra.CdaFIGaFall"],
+            join_snippet="""\
+cobra.CdaFIGaKopf gk
+LEFT JOIN cobra.CdaFIGaFall gf ON gf.FIGAKOPF_ID = gk.ID""",
+            date_facet="CdaFIGaKopf.AntragsDatum",
+            notes=(
+                "#41: workshop-side warranty CLAIM records (one application + its case-"
+                "detail lines) -- distinct from theme 10's warranty CONFIG/dictionary "
+                "tables (`CdwFIAktion`/`CdwFIGwArt`), which this doc cross-references but "
+                "does not own (see cross-theme FK note below). WARNING: the doc's ER "
+                "diagram claims `CdaFIGaKopf }o--|| CdaAuftragK : \"AUFTRAGK_ID\"` and "
+                "`CdaFIGaFall }o--|| CdaFIGaKopf : \"FallNr\"` -- NEITHER matches live. The "
+                "real edges are `CdaFIGaKopf.AUFTRAGKSPLITT_ID -> CdaAuftragKSplitt.ID` "
+                "(99.9%, one level down from the order header, same pattern as "
+                "CdaAuftragsSteuer in WORKSHOP.ORDER -- not joined into this leaf directly "
+                "to keep it self-contained) and `CdaFIGaFall.FIGAKOPF_ID -> "
+                "CdaFIGaKopf.ID` (100%, 28262/28273) -- `FallNr` is CdaFIGaFall's own "
+                "identifier column, not a column CdaFIGaKopf even has. Also: "
+                "`CdaFIGaKopf.GaArt` (the ticket's own cross-reference to "
+                "`CdwFIGwArt.GarArt`, warranty theme #44) does not exist on this table at "
+                "all -- a similarly-spelled `GwArt` column exists instead, but on a "
+                "DIFFERENT table (`CdaGenGaKopf`, excluded here as system/test data, only "
+                "1 row). Flagging for whoever picks up #44 rather than guessing at the "
+                "right relationship now."
+            ),
+        ),
+        ScopeLeaf(
+            id="WORKSHOP.PACKAGES",
+            label="Reparaturpakete & Verrechnung",
+            tables=[
+                "cobra.CdaPaketKopf",
+                "cobra.CdaPaketPos",
+                "cobra.CdaVerrechSatz",
+                "cobra.CdaVerrechSatzGrup",
+            ],
+            join_snippet="""\
+cobra.CdaPaketKopf pk
+LEFT JOIN cobra.CdaPaketPos pp ON pp.PaketKopf_ID = pk.ID
+LEFT JOIN cobra.CdaVerrechSatz vs ON vs.VerrechSatzNr = pp.VerrechSatzNr
+LEFT JOIN cobra.CdaVerrechSatzGrup vg ON vg.VerrechSatzGrupId = vs.VerrechSatzGrupId""",
+            date_facet="CdaPaketKopf.CreateDate",
+            notes=(
+                "#41: `CdaPaketPos.PaketKopf_ID -> CdaPaketKopf.ID` is 100% verified "
+                "(4454/4454); `.VerrechSatzNr -> CdaVerrechSatz.VerrechSatzNr` is 75.1% "
+                "(3344/4454, soft-verified); `CdaVerrechSatz.VerrechSatzGrupId -> "
+                "CdaVerrechSatzGrup.VerrechSatzGrupId` is 90.9% (2400/2640). Data quirk "
+                "worth knowing before writing a 'rate by group' question: 8 of the 11 rate "
+                "groups (`VerrechSatzGrupId` 2-9) share an EXACTLY IDENTICAL rate schedule "
+                "(same min/max/avg to the cent) -- verified live, not a query bug -- so "
+                "grouping by `CdaVerrechSatzGrup.Bezeichnung` (mostly brand names, e.g. "
+                "'Fiat PKW'/'Alfa Romeo'/'Lancia') and averaging the rate returns the same "
+                "number for most brands. A 'how many rate groups exist' or 'total/average "
+                "package price' question avoids this; a 'compare rates across brands' "
+                "question would technically run but read as suspiciously uniform."
+            ),
+        ),
+        ScopeLeaf(
+            id="WORKSHOP.LABOR_CATALOG",
+            label="Standardarbeitswerte",
+            tables=["cobra.CdaApo", "cobra.CdaFIApoZusatz"],
+            join_snippet="""\
+cobra.CdaApo a
+LEFT JOIN cobra.CdaFIApoZusatz z ON z.ApoId = a.ApoId""",
+            date_facet="CdaApo.CreateDate",
+            notes=(
+                "#41: standalone reference catalog, deliberately NOT joined to "
+                "`CdaAuftragsPos` (actual usage) -- the doc's own flagship 'most-used "
+                "standard labor items' example query joins on `p.ApoId = a.ApoId`, but "
+                "`CdaAuftragsPos` has no `ApoId` column at all live (verified via "
+                "INFORMATION_SCHEMA.COLUMNS), and its `SachNr` column (the only other "
+                "candidate) matches 0/641188 `CdaApo.ApoId` values -- there is no live, "
+                "verifiable way to compute 'how often was this standard labor item used' "
+                "in this sample; `CdaFIApoZusatz.ApoId -> CdaApo.ApoId` (100%, "
+                "16875/16875) is the only relationship in this leaf that does resolve. "
+                "WARNING: `CdaApo.Zeit` (standard time) and `.Preis` (standard price) are "
+                "both zero for ~99.7% of rows (16879/16929 have `Zeit = 0`; 16884/16929 "
+                "have `Preis = 0`) -- an 'average standard time/price' question would be "
+                "dominated by placeholder zero rows and is not offered; see "
+                "leaf_question_bank.yaml's known-gap note instead."
+            ),
+        ),
+    ],
+)
+
+
 TREES: dict[str, ScopeTree] = {
     "LEAD": LEAD_TREE,
     "CUSTOMER": CUSTOMER_TREE,
     "NEWCAR": NEWCAR_TREE,
     "FINANCE": FINANCE_TREE,
+    "WORKSHOP": WORKSHOP_TREE,
 }
 
 

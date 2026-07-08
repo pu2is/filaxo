@@ -1,9 +1,10 @@
-# Per-leaf question bank for the LEAD + CUSTOMER + NEWCAR + FINANCE scope trees
-# (#29, #39, #40).
+# Per-leaf question bank for the LEAD + CUSTOMER + NEWCAR + FINANCE + WORKSHOP scope
+# trees (#29, #39, #40, #41).
 #
 # Sources: each theme doc's "现实中容易出现的问题" table, docs/check_crm.md's 2026-07-04
 # DB-verified findings (re-verified live here -- row counts/values can drift, see
-# docs/scope-trees.md Known Gaps), and #27/#28/#39/#40's own live-verified schema knowledge.
+# docs/scope-trees.md Known Gaps), and #27/#28/#39/#40/#41's own live-verified schema
+# knowledge.
 #
 # Bank != prompt (#29): only the top 2-3 "verified: true, bucket: A" entries per leaf are
 # meant to ever become a generate_sql few-shot -- the loader (#30) does that selection, not
@@ -780,6 +781,198 @@
   row_count: 1
   chart_hint: kpi
   note: "Storno is NOT the doc's claimed 'J'/'N' flag -- real values are '0' (not reversed, 30/47 rows) / '1'/'2'/'3' (17/47 rows total, different reversal states with no verified dictionary distinguishing them). Held out of few-shots for the small/thin subset, same reasoning as finance_pos_cash_storno_count."
+
+# --- WORKSHOP.OVERVIEW (#41) --------------------------------------------------------------
+- id: workshop_overview_total
+  node: WORKSHOP.OVERVIEW
+  bucket: A
+  question: "Wie viele Werkstattaufträge haben wir insgesamt erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS AuftragsCount
+    FROM cobra.CdaAuftragK
+    WHERE Geloescht = '0'
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: workshop_overview_top_brands
+  node: WORKSHOP.OVERVIEW
+  bucket: A
+  question: "Für welche Fahrzeugmarken werden die meisten Werkstattaufträge erfasst?"
+  reference_sql: |
+    SELECT TOP 5 Marke, COUNT(*) AS AnzahlAuftraege
+    FROM cobra.CdaAuftragK
+    WHERE Marke IS NOT NULL AND Marke != '' AND Geloescht = '0'
+    GROUP BY Marke
+    ORDER BY AnzahlAuftraege DESC
+  verified: true
+  row_count: 5
+  chart_hint: bar
+
+- id: workshop_overview_deleted
+  node: WORKSHOP.OVERVIEW
+  bucket: B
+  question: "Wie viele Werkstattaufträge wurden als gelöscht markiert?"
+  reference_sql: |
+    SELECT COUNT(*) AS DeletedCount
+    FROM cobra.CdaAuftragK
+    WHERE Geloescht = '1'
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "Geloescht is '0'/'1' live, not the 'J' the doc's own problem-statement table implies -- held out for eval diversity alongside the bucket-A total-count question, exercising the same soft-delete-flag caveat from the other direction."
+
+# --- WORKSHOP.ORDER (#41) -----------------------------------------------------------------
+- id: workshop_order_avg_positions
+  node: WORKSHOP.ORDER
+  bucket: A
+  question: "Wie viele Auftragspositionen hat ein Werkstattauftrag im Durchschnitt?"
+  reference_sql: |
+    SELECT AVG(CAST(cnt AS FLOAT)) AS AvgPositionsPerOrder
+    FROM (
+      SELECT AUFTRAGK_ID, COUNT(*) AS cnt
+      FROM cobra.CdaAuftragsPos
+      GROUP BY AUFTRAGK_ID
+    ) t
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: workshop_order_locked_now
+  node: WORKSHOP.ORDER
+  bucket: A
+  question: "Wie viele Werkstattaufträge sind aktuell gesperrt?"
+  reference_sql: |
+    SELECT COUNT(DISTINCT AUFTRAGK_ID) AS CurrentlyLockedOrders
+    FROM cobra.CdaAuftragSperre
+    WHERE SperrKz = '1'
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "CdaAuftragSperre is a lock/unlock EVENT LOG, not a current-state flag table -- 9220 of 9226 rows have SperrKz = '0' (released). Filtering SperrKz = '1' is required for a 'currently locked' answer, same pattern as NEWCAR's CdnAuftragSperre (#39)."
+
+- id: workshop_order_repende_coverage
+  node: WORKSHOP.ORDER
+  bucket: B
+  question: "Bei wie vielen Werkstattaufträgen ist ein Reparaturende erfasst?"
+  reference_sql: |
+    SELECT COUNT(*) AS n
+    FROM cobra.CdaAuftragK
+    WHERE RepEnde IS NOT NULL
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "KNOWN GAP: only 4 of 133681 orders have RepEnde populated (~0.003%) -- the doc's own flagship 'unclosed orders'/'repair cycle time' questions depend on RepBeginn/RepEnde, which exist exactly as documented but are essentially never filled in in this sample. Kept as a documented data-quality caveat rather than a clean cycle-time few-shot; see docs/scope-trees.md Known Gaps."
+
+# --- WORKSHOP.WARRANTY_CLAIMS (#41) ---------------------------------------------------------
+- id: workshop_warranty_total
+  node: WORKSHOP.WARRANTY_CLAIMS
+  bucket: A
+  question: "Wie viele Garantieanträge wurden insgesamt gestellt?"
+  reference_sql: |
+    SELECT COUNT(*) AS ClaimCount
+    FROM cobra.CdaFIGaKopf
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: workshop_warranty_avg_amount
+  node: WORKSHOP.WARRANTY_CLAIMS
+  bucket: A
+  question: "Wie hoch ist der durchschnittliche Garantieantragsbetrag?"
+  reference_sql: |
+    SELECT AVG(ZahlGesamt) AS AvgClaimAmount
+    FROM cobra.CdaFIGaKopf
+    WHERE ZahlGesamt IS NOT NULL
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: workshop_warranty_without_case
+  node: WORKSHOP.WARRANTY_CLAIMS
+  bucket: B
+  question: "Wie viele Garantieanträge haben keine zugehörige Falldetails?"
+  reference_sql: |
+    SELECT COUNT(*) AS n
+    FROM cobra.CdaFIGaKopf gk
+    WHERE NOT EXISTS (SELECT 1 FROM cobra.CdaFIGaFall gf WHERE gf.FIGAKOPF_ID = gk.ID)
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "1019 of 18397 claim headers (~5.5%) have no CdaFIGaFall case-detail row -- a legitimate, verified minority. Held out of few-shots for eval diversity rather than being a clean 'every claim has details' assumption."
+
+# --- WORKSHOP.PACKAGES (#41) ----------------------------------------------------------------
+- id: workshop_packages_total
+  node: WORKSHOP.PACKAGES
+  bucket: A
+  question: "Wie viele Reparaturpakete bieten wir an?"
+  reference_sql: |
+    SELECT COUNT(*) AS PackageCount
+    FROM cobra.CdaPaketKopf
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: workshop_packages_avg_price
+  node: WORKSHOP.PACKAGES
+  bucket: A
+  question: "Wie hoch ist der durchschnittliche Paketpreis?"
+  reference_sql: |
+    SELECT AVG(PreisPaket) AS AvgPackagePrice
+    FROM cobra.CdaPaketKopf
+    WHERE PreisPaket IS NOT NULL
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: workshop_packages_rate_groups
+  node: WORKSHOP.PACKAGES
+  bucket: B
+  question: "Wie viele Verrechnungssatz-Gruppen sind definiert?"
+  reference_sql: |
+    SELECT COUNT(*) AS RateGroupCount
+    FROM cobra.CdaVerrechSatzGrup
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "Held out for eval diversity -- a 'meta' question about the billing-rate structure rather than about packages themselves. 8 of these 11 groups share an identical rate schedule (verified live), so a 'compare rates across groups' question was deliberately not built (would read as suspiciously uniform); see scope_tree.py's WORKSHOP.PACKAGES leaf notes."
+
+# --- WORKSHOP.LABOR_CATALOG (#41) -----------------------------------------------------------
+- id: workshop_labor_total
+  node: WORKSHOP.LABOR_CATALOG
+  bucket: A
+  question: "Wie viele Standardarbeitswerte-Positionen gibt es im Katalog?"
+  reference_sql: |
+    SELECT COUNT(*) AS CatalogCount
+    FROM cobra.CdaApo
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: workshop_labor_with_zusatz
+  node: WORKSHOP.LABOR_CATALOG
+  bucket: A
+  question: "Wie viele Standardarbeitswerte haben eine Zusatzklassifikation hinterlegt?"
+  reference_sql: |
+    SELECT COUNT(*) AS n
+    FROM cobra.CdaApo a
+    WHERE EXISTS (SELECT 1 FROM cobra.CdaFIApoZusatz z WHERE z.ApoId = a.ApoId)
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+
+- id: workshop_labor_nonzero_pricing
+  node: WORKSHOP.LABOR_CATALOG
+  bucket: B
+  question: "Bei wie vielen Standardarbeitswerten ist eine Zeit oder ein Preis größer als null hinterlegt?"
+  reference_sql: |
+    SELECT COUNT(*) AS n
+    FROM cobra.CdaApo
+    WHERE Preis > 0 OR Zeit > 0
+  verified: true
+  row_count: 1
+  chart_hint: kpi
+  note: "KNOWN GAP: only 53 of 16929 catalog entries (~0.3%) have any nonzero standard time or price -- the rest are placeholder/inactive rows. An 'average standard time/price' question was deliberately not built for this reason (see scope_tree.py's WORKSHOP.LABOR_CATALOG notes); this coverage question documents the gap honestly instead."
 
 # --- Bucket C: out-of-scope probes (not leaf-specific) ----------------------------------
 - id: probe_weather
