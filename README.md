@@ -10,8 +10,6 @@ Instead of dropping users in front of a blank prompt box, the bot leads a **guid
 
 **Status:** The funnel walks the D5 scope tree (thema → leaf) with a breadcrumb undo — pick a thema, drill to a leaf (e.g. "Verkauf & Leads" → "Bewertung & Scoring"), optionally enter a date range with native von/bis date pickers (D6), then ask a question — typed, or picked from a collapsible suggestion panel of recommended questions (D8) — and see a real result table. After every answer the bot offers to continue the same topic, change the Zeitraum, or switch topics entirely (D7), so a session never has to restart just to ask a second question. Click a breadcrumb chip's × to cut back to that level and re-pick without restarting the whole conversation. Charts, narration, and the pinnable dashboard follow.
 
-_TODO: demo screenshot/GIF._
-
 ## Tech Stack
 
 | Layer      | Choice                                                        |
@@ -194,11 +192,3 @@ docker-compose.gpu.yml   Optional GPU overlay for Ollama (see Getting Started ab
 FilaksOne/               Local sample database backup (git-ignored — extract FilaksOne.zip here, see Getting Started step 0)
 docs/                    Design docs and database domain documentation (git-ignored, WIP)
 ```
-
-## Documentation
-
-_TODO: link to architecture, database domain docs, and API reference once published._
-
-## License
-
-_TODO._
