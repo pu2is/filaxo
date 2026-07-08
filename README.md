@@ -1,4 +1,4 @@
-# Filax.One — CRM Reporting Chatbot
+# CRM Reporting Chatbot MVP 1
 
 AI-powered chatbot for Filax.One, a CRM system for automotive dealerships. Users ask natural-language questions against the CRM database and get back charts, tables, and a saveable personal dashboard.
 
